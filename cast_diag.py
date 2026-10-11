@@ -418,40 +418,65 @@ def run_phase3_ports(target_ip: str):
     return results
 
 # ==============================================================================
-# Phase 4: Actionable Network Diagnosis & Vendor Guidance
+# Phase 4: Root Cause Synthesis & Protocol-Level Remediation
 # ==============================================================================
 def run_phase4_guidance(target_ip: str, port_results: Dict[str, bool], vendor_name: str):
     print("\n" + "=" * 78)
-    print("  PHASE 4: VENDOR-SPECIFIC REMEDIATION & ROOT CAUSE ANALYSIS")
+    print("  PHASE 4: ARCHITECTURAL ROOT CAUSE SYNTHESIS & RESOLUTION")
     print("=" * 78)
 
     rtsp_mice = port_results.get("TCP:7236", False)
-    http_ctrl = port_results.get("TCP:80", False) or port_results.get("TCP:8008", False)
+    airplay_ctrl = port_results.get("TCP:7000", False) or port_results.get("TCP:7100", False)
+    cast_ctrl = port_results.get("TCP:8008", False) or port_results.get("TCP:8009", False)
 
+    print(f"\n[TARGET ECOSYSTEM]: {vendor_name} ({target_ip})")
+
+    # Issue A: RTSP / Miracast Signaling Blocked
     if not rtsp_mice:
-        print("\n  [CRITICAL FINDING: MIRACAST RTSP BLOCKED]")
-        print("  * Windows 10/11 'Win + K' connects over TCP 7236. Because this port failed:")
-        print("    -> Airtame / Newline displays will fail native PIN setup and prompt for an app.")
-        print("    -> Remedy (Juniper Mist): In WLAN > L2/L3 Access Lists, permit TCP 7236 and UDP 7250-7254.")
-        print("    -> Remedy (Cisco Catalyst / Meraki): Disable Client Isolation on SSID or add walled-garden bypass.")
-        print("    -> Remedy (Aruba): Add rule to user role: 'user any svc-rtsp permit'.")
+        print("\n  [PROBLEM 1: CONTROL SIGNALING PORT BLOCKED (TCP 7236)]")
+        print("  * Underlying Technical Cause:")
+        print("    Native Miracast (MS-MICE) uses TCP 7236 for session setup and RTSP negotiation.")
+        print("    When blocked, the client cannot request the session token or on-screen PIN.")
+        print("    The display detects connection timeout and prompts the user to download a desktop app.")
+        print("  * Resolution:")
+        print("    -> In WLAN / SSID Security Policies: Permit inbound TCP port 7236 and UDP 7250-7254.")
+        print("    -> In Layer 2 Isolation: Disable peer-to-peer / client isolation for devices on this VLAN,")
+        print("       or define an explicit whitelist / walled-garden entry for the display's IP.")
     else:
-        print("\n  [SUCCESS: RTSP TCP 7236 RESPONDING]")
-        print("  * Control session signaling is open. If native casting still does not detect display:")
-        print("    -> The issue is strictly L2 mDNS discovery / IGMP snooping dropping _display._tcp.")
+        print("\n  [VERIFIED: CONTROL SIGNALING (TCP 7236) ACCESSIBLE]")
+        print("  * RTSP signaling is open. If native pairing fails, inspect multicast discovery below.")
 
-    print("\n  [INFRASTRUCTURE CONFIGURATION CHECKLIST]")
-    print("  1. Juniper Mist: Wireless > WLANs > [SSID]")
-    print("     - Check: 'Multicast to Unicast conversion'")
-    print("     - Check: 'Bonjour Gateway' -> Map services: _display._tcp, _airplay._tcp, _googlecast._tcp")
-    print("     - Uncheck: 'No Local Traffic (isolate clients)' if sharing VLAN with displays.")
-    print("  2. Junos EX Switching:")
-    print("     - Verify IGMP Querier: 'set protocols igmp interface <irb-interface>'")
-    print("     - Verify snooping: 'show igmp snooping membership'")
-    print("  3. Aruba / HP ProCurve / CX:")
-    print("     - Enable AirGroup for Miracast & AirPlay: 'airgroup service miracast enable'")
-    print("  4. Cisco Meraki:")
-    print("     - Wireless > Configure > Access Control > Addressing: Change from 'NAT Mode' to 'Bridge Mode'")
+    # Issue B: Multicast Discovery / Filtering
+    print("\n  [PROBLEM 2: MULTICAST & ZERO-CONF DISCOVERY NOT PROPAGATING]")
+    print("  * Underlying Technical Cause:")
+    print("    Casting devices advertise services via link-local multicast (mDNS 224.0.0.251 and SSDP 239.255.255.250).")
+    print("    Wireless Access Points and Layer 2 switches often drop or filter multicast by default to conserve airtime.")
+    print("  * Resolution:")
+    print("    -> Multicast Optimization: Enable 'Multicast-to-Unicast conversion' on the wireless controller.")
+    print("       This converts unreliable 802.11 multicast frames into reliable unicast 802.11 frames for clients.")
+    print("    -> Service Gateway / mDNS Proxy: Enable an mDNS / ZeroConf gateway service on the wireless controller")
+    print("       and ensure the following service PTR records are explicitly permitted:")
+    print("         * Miracast:  _display._tcp")
+    print("         * AirPlay:   _airplay._tcp, _raop._tcp")
+    print("         * Cast:      _googlecast._tcp")
+    print("         * Web/AV:    _airtame._tcp, _clickshare._tcp, _solstice._tcp")
+
+    # Issue C: Layer 2 Multicast Longevity (IGMP Snooping & Querier)
+    print("\n  [PROBLEM 3: DISPLAYS DISAPPEAR AFTER 3 TO 5 MINUTES (IGMP PRUNING)]")
+    print("  * Underlying Technical Cause:")
+    print("    When IGMP Snooping is enabled on managed switches without an active IGMP Querier on the subnet,")
+    print("    the switch stops receiving membership reports and prunes multicast groups from access ports.")
+    print("  * Resolution:")
+    print("    -> Enable an IGMP Querier on the default gateway or Layer 3 switch SVI for this VLAN.")
+    print("    -> Ensure query intervals are set to standard timings (typically 60-125 seconds).")
+
+    # Issue D: Inter-VLAN Routing & TTL Constraints
+    print("\n  [PROBLEM 4: CROSS-VLAN CASTING (CLIENTS & DISPLAYS ON DIFFERENT SUBNETS)]")
+    print("  * Underlying Technical Cause:")
+    print("    mDNS packets are link-local with TTL=1 and cannot traverse Layer 3 routers without proxying.")
+    print("  * Resolution:")
+    print("    -> Deploy an mDNS Proxy/Reflector at the router or access point layer.")
+    print("    -> Ensure inter-VLAN ACLs permit client-to-display TCP control ports and bidirectional UDP media.")
 
     print("\n" + "=" * 78)
     print("Diagnostics completed.\n")
