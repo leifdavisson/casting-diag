@@ -410,6 +410,74 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> tup
     return discovered_mdns, discovered_ssdp
 
 # ==============================================================================
+# Phase 1.5: Active Subnet Sweep (Multicast-Silent Display Hunter)
+# ==============================================================================
+def run_subnet_sweep(local_ip: str, timeout: float = 0.25) -> list[dict]:
+    """
+    Sweeps the local /24 subnet for displays that do not advertise on mDNS/SSDP
+    (multicast-silent) by probing standard casting and media ports concurrently.
+    """
+    import concurrent.futures
+
+    print("\n" + "=" * 78)
+    print("  PHASE 1.5: ACTIVE SUBNET SWEEP (MULTICAST-SILENT DISPLAY HUNTER)")
+    print("=" * 78)
+
+    # Derive /24 prefix
+    parts = local_ip.split(".")
+    if len(parts) != 4:
+        return []
+    prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
+
+    probe_ports = [7236, 8009, 8008, 8082, 8083, 7000, 60000, 5000]
+    print(f"[*] Scanning local subnet {prefix}0/24 for active casting endpoints...")
+
+    detected_silent_displays = []
+
+    def check_host(ip: str):
+        if ip == local_ip:
+            return None
+        open_ports = []
+        for port in probe_ports:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(timeout)
+                s.connect((ip, port))
+                open_ports.append(port)
+                s.close()
+            except Exception:
+                pass
+        if open_ports:
+            desc = "Generic Media Receiver"
+            if 7236 in open_ports:
+                desc = "Miracast (MS-MICE) Receiver"
+            elif 8009 in open_ports:
+                desc = "Google Cast / Smart Hub"
+            elif 8082 in open_ports or 8083 in open_ports:
+                desc = "Amazon Fire TV / Media Endpoint"
+            elif 7000 in open_ports:
+                desc = "Apple AirPlay Display"
+            return {"ip": ip, "ports": open_ports, "description": desc}
+        return None
+
+    # Sweep hosts 1 through 254 using ThreadPoolExecutor
+    candidate_ips = [f"{prefix}{i}" for i in range(1, 255)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+        results = executor.map(check_host, candidate_ips)
+        for r in results:
+            if r:
+                detected_silent_displays.append(r)
+
+    if detected_silent_displays:
+        print(f"  [+] Found {len(detected_silent_displays)} casting-capable host(s) via active port probe:")
+        for d in detected_silent_displays:
+            print(f"      -> {d['ip']}: {d['description']} (Open Ports: {d['ports']})")
+    else:
+        print("  [-] No additional multicast-silent casting endpoints detected on subnet.")
+
+    return detected_silent_displays
+
+# ==============================================================================
 # Phase 2: Vendor Fingerprinting & Ecosystem Identification
 # ==============================================================================
 def run_phase2_fingerprint(target_ip: str, discovered_mdns: dict[str, list[dict]], discovered_ssdp: list[dict]) -> str:
@@ -678,6 +746,7 @@ Modes:
     parser.add_argument("--zero-config", action="store_true", help="Non-interactive batch mode; auto-audit all discovered devices")
     parser.add_argument("--export", action="store_true", help="Export summary to a text file for ticket attachments")
     parser.add_argument("--monitor", type=int, default=0, help="Run IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
+    parser.add_argument("--sweep", action="store_true", help="Force active subnet sweep for multicast-silent displays")
     parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3, 4], help="Run only a specific diagnostic phase (0-4)")
     parser.add_argument("--skip-prereqs", action="store_true", help="Skip Phase 0 system prerequisites validation")
 
@@ -705,19 +774,27 @@ Modes:
         if args.phase == 0:
             sys.exit(0)
 
-    # Phase 1: L2 Discovery
+    # Phase 1: L2 Multicast Discovery
     if args.phase is None or args.phase == 1:
         discovered_mdns, discovered_ssdp = run_phase1_discovery(timeout=3.0, monitor_interval=args.monitor)
     else:
         discovered_mdns, discovered_ssdp = {}, []
 
-    # Collect unique IPs found in Phase 1
+    # Phase 1.5: Active Subnet Sweep (Multicast-Silent Display Hunter)
+    # Automatically triggers if 0/few devices are found or if --sweep is passed
+    discovered_sweep = []
+    if (args.phase is None or args.phase == 1) and (args.sweep or len(discovered_ssdp) + sum(len(v) for v in discovered_mdns.values()) < 2):
+        discovered_sweep = run_subnet_sweep(local_ip)
+
+    # Collect unique IPs found across all discovery mechanisms
     found_ips = set()
     for records in discovered_mdns.values():
         for r in records:
             found_ips.add(r["ip"])
     for s in discovered_ssdp:
         found_ips.add(s["ip"])
+    for sw in discovered_sweep:
+        found_ips.add(sw["ip"])
     sorted_ips = sorted(found_ips)
 
     targets_to_audit = []
@@ -783,6 +860,11 @@ Modes:
                     if s["ip"] == ip and s.get("friendly_name"):
                         name = f" - '{s['friendly_name']}'"
                         break
+                if not name:
+                    for sw in discovered_sweep:
+                        if sw["ip"] == ip:
+                            name = f" - [{sw['description']}]"
+                            break
                 print(f"      [{idx}] {ip}{name}")
             print("\n      [C] Compare two devices (A/B Test: Working room vs. Broken room)")
             print("      [A] Audit all discovered displays")
