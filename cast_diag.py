@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Casting Diagnostic Suite (cast-diag)
-Enterprise network verification tool for Miracast, Airtame, Apple AirPlay, and Google Cast.
+Enterprise & Education Network Verification Tool for Screen Casting & Wireless Presentation.
+
+Supported Ecosystems:
+- Enterprise Gateways: Airtame, Barco ClickShare, Crestron AirMedia, Mersive Solstice, ScreenBeam, Kramer VIA
+- Education / Classroom IFPs: SMART Board (iQ), Promethean ActivPanel, Newline Interactive, ViewSonic ViewBoard, Clevertouch
+- Consumer / Standard: Apple TV (AirPlay 2), Google Cast / Chromecast, Miracast (MS-MICE), DLNA/UPnP/DIAL
 
 Licensed under GNU AGPLv3.
 """
@@ -12,259 +17,364 @@ import struct
 import time
 import argparse
 import select
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
-# Multicast & Protocol Constants
+# ==============================================================================
+# Protocol & Multicast Constants
+# ==============================================================================
 MDNS_GROUP = "224.0.0.251"
 MDNS_PORT = 5353
 SSDP_GROUP = "239.255.255.250"
 SSDP_PORT = 1900
-WSD_GROUP = "239.255.255.250"
-WSD_PORT = 3702
 
 CAST_SERVICES = {
+    # Native Standards
     "_display._tcp.local": {
         "name": "Miracast over Infrastructure (MS-MICE)",
-        "protocol": "Miracast",
-        "description": "Windows 10/11 native screen casting discovery",
-    },
-    "_airtame._tcp.local": {
-        "name": "Airtame Native Discovery",
-        "protocol": "Airtame",
-        "description": "Airtame discovery and status broadcast",
+        "category": "Native Windows",
+        "desc": "Windows 10/11 native screen mirroring",
     },
     "_airplay._tcp.local": {
         "name": "Apple AirPlay Mirroring",
-        "protocol": "AirPlay",
-        "description": "Apple TV and AirPlay video mirroring",
+        "category": "Native Apple",
+        "desc": "Apple TV, macOS, iOS screen mirroring",
     },
     "_raop._tcp.local": {
         "name": "Apple AirPlay Audio (RAOP)",
-        "protocol": "AirPlay",
-        "description": "Remote Audio Output Protocol",
+        "category": "Native Apple",
+        "desc": "Remote Audio Output Protocol",
     },
     "_googlecast._tcp.local": {
         "name": "Google Cast / Chromecast",
-        "protocol": "Google Cast",
-        "description": "Chromecast and Google Nest hub discovery",
+        "category": "Native Google",
+        "desc": "Chromecast, Chrome browser, ChromeOS discovery",
+    },
+    # Enterprise Wireless Presentation
+    "_airtame._tcp.local": {
+        "name": "Airtame Discovery",
+        "category": "Enterprise Gateway",
+        "desc": "Airtame 2 & Airtame Hub status & beacon",
     },
     "_clickshare._tcp.local": {
         "name": "Barco ClickShare",
-        "protocol": "ClickShare",
-        "description": "Enterprise presentation base unit discovery",
+        "category": "Enterprise Gateway",
+        "desc": "Barco ClickShare base units (C/CX series)",
     },
     "_solstice._tcp.local": {
         "name": "Mersive Solstice Pod",
-        "protocol": "Solstice",
-        "description": "Mersive Solstice wireless collaboration display",
+        "category": "Enterprise Gateway",
+        "desc": "Mersive Solstice collaboration displays",
+    },
+    "_crestron._tcp.local": {
+        "name": "Crestron AirMedia",
+        "category": "Enterprise Gateway",
+        "desc": "Crestron AM series presentation gateways",
+    },
+    # Classroom Interactive Flat Panels (IFP)
+    "_smart-iq._tcp.local": {
+        "name": "SMART Board (iQ / SMART Mirror)",
+        "category": "Classroom IFP",
+        "desc": "SMART Technologies interactive displays",
+    },
+    "_promethean._tcp.local": {
+        "name": "Promethean ActivPanel",
+        "category": "Classroom IFP",
+        "desc": "Promethean Screen Share service",
+    },
+    "_newline._tcp.local": {
+        "name": "Newline Interactive Cast",
+        "category": "Classroom IFP",
+        "desc": "Newline Cast / DisplayCast wireless receiver",
+    },
+    "_vcast._tcp.local": {
+        "name": "ViewSonic vCastReceiver",
+        "category": "Classroom IFP",
+        "desc": "ViewSonic ViewBoard vCast screen sharing",
     },
 }
 
 PORT_MATRIX = {
-    "Miracast": [
-        {"port": 7236, "proto": "TCP", "name": "RTSP Control", "critical": True, "desc": "Miracast session setup & PIN verification"},
-        {"port": 7250, "proto": "UDP", "name": "RTP Video", "critical": False, "desc": "RTP media payload"},
+    "Miracast (MS-MICE)": [
+        {"port": 7236, "proto": "TCP", "name": "Miracast RTSP Control", "critical": True, "desc": "PIN handshake & session setup"},
+        {"port": 7250, "proto": "UDP", "name": "Miracast RTP Video", "critical": False, "desc": "Audio/video RTP stream"},
     ],
-    "Airtame": [
-        {"port": 80, "proto": "TCP", "name": "HTTP API", "critical": True, "desc": "Local device management & pairing fallback"},
-        {"port": 443, "proto": "TCP", "name": "HTTPS API", "critical": False, "desc": "TLS management endpoint"},
-        {"port": 8001, "proto": "TCP", "name": "Streaming Control", "critical": False, "desc": "Airtame proprietary streaming"},
-    ],
-    "AirPlay": [
-        {"port": 7000, "proto": "TCP", "name": "AirPlay Service", "critical": True, "desc": "AirPlay stream initiation"},
-        {"port": 7100, "proto": "TCP", "name": "AirPlay Mirroring", "critical": True, "desc": "Screen mirroring session"},
+    "Apple AirPlay": [
+        {"port": 7000, "proto": "TCP", "name": "AirPlay Service Control", "critical": True, "desc": "Stream initiation and setup"},
+        {"port": 7100, "proto": "TCP", "name": "AirPlay Mirroring Session", "critical": True, "desc": "H.264 video mirroring channel"},
+        {"port": 319, "proto": "UDP", "name": "PTP Event Clock", "critical": False, "desc": "Precision Time Protocol (A/V sync)"},
     ],
     "Google Cast / DIAL": [
-        {"port": 8008, "proto": "TCP", "name": "HTTP DIAL / REST", "critical": True, "desc": "DIAL / Cast REST control & 1st gen Chromecast"},
-        {"port": 8009, "proto": "TCP", "name": "TLS Cast Channel", "critical": True, "desc": "Encrypted protobuf cast control"},
+        {"port": 8008, "proto": "TCP", "name": "DIAL / Cast HTTP", "critical": True, "desc": "DIAL REST control & 1st gen Cast"},
+        {"port": 8009, "proto": "TCP", "name": "Cast TLS Control", "critical": True, "desc": "Encrypted protobuf cast session"},
     ],
-    "DLNA / UPnP": [
-        {"port": 2869, "proto": "TCP", "name": "UPnP Eventing / ICS", "critical": False, "desc": "Windows Media Player / DLNA renderer"},
-        {"port": 5000, "proto": "TCP", "name": "UPnP MediaRenderer", "critical": False, "desc": "Smart TV DLNA control endpoint"},
+    "Airtame": [
+        {"port": 80, "proto": "TCP", "name": "Airtame Web / API", "critical": True, "desc": "Device management and pairing fallback"},
+        {"port": 443, "proto": "TCP", "name": "Airtame HTTPS", "critical": False, "desc": "TLS management"},
+        {"port": 8001, "proto": "TCP", "name": "Airtame Streaming", "critical": False, "desc": "Proprietary desktop streaming channel"},
     ],
-    "Crestron / Barco": [
-        {"port": 41794, "proto": "TCP", "name": "Crestron CIP", "critical": False, "desc": "Crestron AirMedia gateway control"},
-        {"port": 8080, "proto": "TCP", "name": "Barco ClickShare Web", "critical": False, "desc": "ClickShare control & streaming interface"},
+    "Classroom IFPs (Newline / SMART / Promethean)": [
+        {"port": 8000, "proto": "TCP", "name": "Newline / IFP Mirroring", "critical": False, "desc": "Newline Cast / Clevershare channel"},
+        {"port": 8443, "proto": "TCP", "name": "IFP Management Portal", "critical": False, "desc": "Web admin / pairing PIN interface"},
+        {"port": 51200, "proto": "TCP", "name": "ScreenBeam / IFP CMS", "critical": False, "desc": "CMS receiver control"},
+    ],
+    "Enterprise AV (Barco / Crestron / Mersive)": [
+        {"port": 8080, "proto": "TCP", "name": "Barco ClickShare Web", "critical": False, "desc": "ClickShare control & streaming"},
+        {"port": 41794, "proto": "TCP", "name": "Crestron CIP Control", "critical": False, "desc": "Crestron IP presentation control"},
+    ],
+    "Legacy DLNA / UPnP": [
+        {"port": 2869, "proto": "TCP", "name": "UPnP Eventing (Windows)", "critical": False, "desc": "Windows Media Player 'Cast to Device'"},
+        {"port": 5000, "proto": "TCP", "name": "DLNA MediaRenderer", "critical": False, "desc": "UPnP Smart TV renderer endpoint"},
     ],
 }
 
+VENDOR_SIGNATURES = [
+    {"name": "Airtame (Airtame 2 / Hub)", "keywords": ["airtame", "airtame2", "airtame-hub"]},
+    {"name": "Newline Interactive Board", "keywords": ["newline", "newlinecast", "displaycast", "newline-board"]},
+    {"name": "SMART Board (iQ / SMART Mirror)", "keywords": ["smarttech", "smart-iq", "smartmirror", "smartboard"]},
+    {"name": "Promethean ActivPanel", "keywords": ["promethean", "activpanel", "screenshare"]},
+    {"name": "ViewSonic ViewBoard", "keywords": ["viewsonic", "viewboard", "vcast"]},
+    {"name": "Barco ClickShare", "keywords": ["clickshare", "barco"]},
+    {"name": "Crestron AirMedia", "keywords": ["crestron", "airmedia", "am-100", "am-200", "am-3200"]},
+    {"name": "Mersive Solstice", "keywords": ["mersive", "solstice"]},
+    {"name": "Apple TV", "keywords": ["appletv", "apple tv", "airplay"]},
+    {"name": "Google Chromecast", "keywords": ["chromecast", "google cast", "google home", "eureka"]},
+]
+
+# ==============================================================================
+# Helper Functions: mDNS & DNS Packing
+# ==============================================================================
 def build_dns_query(service_name: str) -> bytes:
     """Builds a raw DNS PTR query for mDNS."""
-    # Transaction ID = 0, Flags = 0 (standard query), Questions = 1
     header = struct.pack(">HHHHHH", 0, 0, 1, 0, 0, 0)
     query = bytearray(header)
     for part in service_name.strip(".").split("."):
         query.append(len(part))
         query.extend(part.encode("utf-8"))
-    query.append(0)  # null terminator
-    # Type PTR = 12, Class IN = 1 (with unicast-response bit = 0)
+    query.append(0)
     query.extend(struct.pack(">HH", 12, 1))
     return bytes(query)
 
-def parse_dns_names(data: bytes, offset: int = 0) -> Tuple[str, int]:
-    """Basic extraction of domain labels from DNS packet."""
-    labels = []
-    curr = offset
-    visited = set()
-    jumped = False
-    next_offset = offset
+# ==============================================================================
+# Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit
+# ==============================================================================
+def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
+    """
+    Audits L2 Multicast (mDNS & SSDP). If monitor_interval > 0, performs an IGMP
+    longevity test to detect premature multicast group pruning.
+    """
+    print("\n" + "=" * 78)
+    print("  PHASE 1: L2 MULTICAST & AIRGROUP/BONJOUR GATEWAY AUDIT")
+    print("=" * 78)
+    print(f"[*] Transmitting mDNS (UDP 5353) and SSDP (UDP 1900) discovery datagrams...")
 
-    while curr < len(data):
-        length = data[curr]
-        if length == 0:
-            if not jumped:
-                next_offset = curr + 1
-            break
-        elif (length & 0xC0) == 0xC0:  # Pointer compression
-            if curr + 1 >= len(data):
-                break
-            pointer = struct.unpack(">H", data[curr:curr+2])[0] & 0x3FFF
-            if not jumped:
-                next_offset = curr + 2
-                jumped = True
-            if pointer in visited:
-                break
-            visited.add(pointer)
-            curr = pointer
-        else:
-            curr += 1
-            labels.append(data[curr:curr+length].decode("utf-8", errors="replace"))
-            curr += length
-            if not jumped:
-                next_offset = curr
-
-    return ".".join(labels), next_offset
-
-def probe_mdns(timeout: float = 3.0) -> Dict[str, List[Dict]]:
-    """Probes the local L2 segment for mDNS casting advertisements."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Set up mDNS socket
+    sock_mdns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock_mdns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        sock_mdns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     except AttributeError:
         pass
+    sock_mdns.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    sock_mdns.settimeout(timeout)
 
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
-    sock.settimeout(timeout)
-
-    discovered = {k: [] for k in CAST_SERVICES}
-
-    # Bind to mDNS port or ephemeral port
     try:
-        sock.bind(("", 0))
+        sock_mdns.bind(("", 0))
     except Exception as e:
-        print(f"[-] Could not bind socket: {e}")
-        return discovered
+        print(f"[-] Could not bind mDNS socket: {e}")
+        return {}, []
 
-    # Transmit queries for each casting service
+    # Set up SSDP socket
+    sock_ssdp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock_ssdp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock_ssdp.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock_ssdp.settimeout(timeout)
+    try:
+        sock_ssdp.bind(("", 0))
+    except Exception as e:
+        print(f"[-] Could not bind SSDP socket: {e}")
+
+    # Send mDNS queries
     for service in CAST_SERVICES:
-        packet = build_dns_query(service)
+        pkt = build_dns_query(service)
         try:
-            sock.sendto(packet, (MDNS_GROUP, MDNS_PORT))
-        except Exception as e:
-            print(f"[-] Failed sending query for {service}: {e}")
-
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        remaining = timeout - (time.time() - start_time)
-        if remaining <= 0:
-            break
-        r, _, _ = select.select([sock], [], [], remaining)
-        if not r:
-            break
-        try:
-            data, addr = sock.recvfrom(4096)
-            for service, details in CAST_SERVICES.items():
-                target_bytes = service.encode("utf-8")
-                if target_bytes in data or service.split(".")[0].encode("utf-8") in data:
-                    # Found match
-                    record = {
-                        "ip": addr[0],
-                        "port": addr[1],
-                        "service": service,
-                        "raw_bytes": len(data)
-                    }
-                    if not any(x["ip"] == addr[0] and x["service"] == service for x in discovered[service]):
-                        discovered[service].append(record)
+            sock_mdns.sendto(pkt, (MDNS_GROUP, MDNS_PORT))
         except Exception:
-            break
+            pass
 
-    sock.close()
-    return discovered
-
-def probe_ssdp(timeout: float = 3.0) -> List[Dict]:
-    """Probes the local L2 segment for SSDP / UPnP / DIAL devices."""
-    ssdp_request = (
+    # Send SSDP query
+    ssdp_req = (
         "M-SEARCH * HTTP/1.1\r\n"
         f"HOST: {SSDP_GROUP}:{SSDP_PORT}\r\n"
         'MAN: "ssdp:discover"\r\n'
         "MX: 2\r\n"
         "ST: ssdp:all\r\n\r\n"
     ).encode("utf-8")
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-    sock.settimeout(timeout)
-
-    discovered = []
     try:
-        sock.bind(("", 0))
-        sock.sendto(ssdp_request, (SSDP_GROUP, SSDP_PORT))
-    except Exception as e:
-        print(f"[-] Could not send SSDP discovery probe: {e}")
-        sock.close()
-        return discovered
+        sock_ssdp.sendto(ssdp_req, (SSDP_GROUP, SSDP_PORT))
+    except Exception:
+        pass
 
+    discovered_mdns = {k: [] for k in CAST_SERVICES}
+    discovered_ssdp = []
+    seen_ssdp_ips = set()
+
+    total_time = monitor_interval if monitor_interval > 0 else timeout
     start_time = time.time()
-    seen_ips = set()
-    while time.time() - start_time < timeout:
-        remaining = timeout - (time.time() - start_time)
+    last_tick = start_time
+
+    if monitor_interval > 0:
+        print(f"[*] Running IGMP Longevity Monitor for {monitor_interval} seconds to test switch snooping/querier...")
+
+    while time.time() - start_time < total_time:
+        now = time.time()
+        if monitor_interval > 0 and (now - last_tick >= 30):
+            elapsed = int(now - start_time)
+            print(f"    ... IGMP Monitor alive: {elapsed}/{monitor_interval}s elapsed ...")
+            last_tick = now
+
+        remaining = total_time - (now - start_time)
         if remaining <= 0:
             break
-        r, _, _ = select.select([sock], [], [], remaining)
-        if not r:
-            break
+
+        r, _, _ = select.select([sock_mdns, sock_ssdp], [], [], min(remaining, 1.0))
+        for ready_sock in r:
+            if ready_sock == sock_mdns:
+                try:
+                    data, addr = sock_mdns.recvfrom(4096)
+                    for service in CAST_SERVICES:
+                        svc_bytes = service.encode("utf-8")
+                        prefix_bytes = service.split(".")[0].encode("utf-8")
+                        if svc_bytes in data or prefix_bytes in data:
+                            record = {"ip": addr[0], "port": addr[1], "service": service, "raw": data}
+                            if not any(x["ip"] == addr[0] and x["service"] == service for x in discovered_mdns[service]):
+                                discovered_mdns[service].append(record)
+                except Exception:
+                    pass
+            elif ready_sock == sock_ssdp:
+                try:
+                    data, addr = sock_ssdp.recvfrom(4096)
+                    ip = addr[0]
+                    if ip not in seen_ssdp_ips:
+                        seen_ssdp_ips.add(ip)
+                        text = data.decode("utf-8", errors="replace")
+                        srv, st, loc = "", "", ""
+                        for line in text.splitlines():
+                            low = line.lower()
+                            if low.startswith("server:"):
+                                srv = line.split(":", 1)[1].strip()
+                            elif low.startswith("st:"):
+                                st = line.split(":", 1)[1].strip()
+                            elif low.startswith("location:"):
+                                loc = line.split(":", 1)[1].strip()
+                        discovered_ssdp.append({"ip": ip, "server": srv or "Generic UPnP", "st": st or "Unknown", "location": loc, "raw": text})
+                except Exception:
+                    pass
+
+    sock_mdns.close()
+    sock_ssdp.close()
+
+    # Display findings
+    mdns_count = sum(len(v) for v in discovered_mdns.values())
+    print("\n--- mDNS Discovery Results (UDP 5353) ---")
+    if mdns_count > 0:
+        for svc, records in discovered_mdns.items():
+            if records:
+                meta = CAST_SERVICES[svc]
+                print(f"  [+] {meta['name']} ({meta['category']}):")
+                for r in records:
+                    print(f"      -> {r['ip']}:{r['port']}")
+    else:
+        print("  [-] No mDNS advertisements received.")
+        print("      * Root Cause: Mist/Aruba/Cisco mDNS Gateway disabled, or dropping 224.0.0.251:5353.")
+
+    print("\n--- SSDP / UPnP Discovery Results (UDP 1900) ---")
+    if discovered_ssdp:
+        for d in discovered_ssdp:
+            print(f"  [+] UPnP/SSDP Device at {d['ip']}: {d['server']} (ST: {d['st']})")
+    else:
+        print("  [-] No SSDP / UPnP responses received.")
+
+    return discovered_mdns, discovered_ssdp
+
+# ==============================================================================
+# Phase 2: Vendor Fingerprinting & Ecosystem Identification
+# ==============================================================================
+def run_phase2_fingerprint(target_ip: str, discovered_mdns: Dict[str, List[Dict]], discovered_ssdp: List[Dict]) -> str:
+    """
+    Inspects responses and performs banner audits to identify the vendor/device.
+    """
+    print("\n" + "=" * 78)
+    print(f"  PHASE 2: VENDOR FINGERPRINTING & HARDWARE RECOGNITION ({target_ip})")
+    print("=" * 78)
+
+    fingerprint_signals = []
+
+    # Check SSDP payloads for this IP
+    for s in discovered_ssdp:
+        if s["ip"] == target_ip:
+            fingerprint_signals.append(s["server"])
+            fingerprint_signals.append(s["st"])
+            fingerprint_signals.append(s["location"])
+
+    # Check mDNS responses
+    for svc, records in discovered_mdns.items():
+        for r in records:
+            if r["ip"] == target_ip:
+                fingerprint_signals.append(svc)
+                try:
+                    fingerprint_signals.append(r["raw"].decode("utf-8", errors="ignore"))
+                except Exception:
+                    pass
+
+    # Probe HTTP banner (port 80 / 8008 / 8080) for signature identification
+    for port in [80, 8008, 8080, 8443]:
         try:
-            data, addr = sock.recvfrom(4096)
-            ip = addr[0]
-            if ip not in seen_ips:
-                seen_ips.add(ip)
-                raw_text = data.decode("utf-8", errors="replace")
-                server = ""
-                st = ""
-                location = ""
-                for line in raw_text.splitlines():
-                    lower = line.lower()
-                    if lower.startswith("server:"):
-                        server = line.split(":", 1)[1].strip()
-                    elif lower.startswith("st:"):
-                        st = line.split(":", 1)[1].strip()
-                    elif lower.startswith("location:"):
-                        location = line.split(":", 1)[1].strip()
-
-                discovered.append({
-                    "ip": ip,
-                    "server": server or "Generic UPnP",
-                    "st": st or "Unknown",
-                    "location": location
-                })
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect((target_ip, port))
+            s.sendall(b"GET / HTTP/1.0\r\nHost: target\r\n\r\n")
+            banner = s.recv(1024).decode("utf-8", errors="ignore")
+            fingerprint_signals.append(banner)
+            s.close()
         except Exception:
+            pass
+
+    combined_text = " ".join(fingerprint_signals).lower()
+
+    identified_vendor = "Generic / Unknown Display"
+    for v in VENDOR_SIGNATURES:
+        if any(k in combined_text for k in v["keywords"]):
+            identified_vendor = v["name"]
             break
 
-    sock.close()
-    return discovered
+    print(f"  [+] Identified Receiver Ecosystem: >> {identified_vendor} <<")
+    if "newline" in combined_text:
+        print("      -> Detected Newline Interactive IFP (Newline Cast / DisplayCast).")
+    elif "airtame" in combined_text:
+        print("      -> Detected Airtame 2 / Airtame Hub.")
+    elif "smart" in combined_text:
+        print("      -> Detected SMART Technologies Interactive Display (iQ).")
+    elif "promethean" in combined_text:
+        print("      -> Detected Promethean ActivPanel (Screen Share).")
+    elif "clickshare" in combined_text:
+        print("      -> Detected Barco ClickShare Base Unit.")
+    elif "apple" in combined_text:
+        print("      -> Detected Apple TV / AirPlay Receiver.")
 
+    return identified_vendor
+
+# ==============================================================================
+# Phase 3: L4 Port & Firewall Inspection
+# ==============================================================================
 def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:
-    """Tests TCP connection to target port."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     start = time.perf_counter()
     try:
         s.connect((ip, port))
-        latency_ms = (time.perf_counter() - start) * 1000
+        ms = (time.perf_counter() - start) * 1000
         s.close()
-        return True, f"{latency_ms:.1f}ms"
+        return True, f"{ms:.1f}ms (Open)"
     except socket.timeout:
         return False, "TIMEOUT (Firewall / Filter Dropped)"
     except ConnectionRefusedError:
@@ -272,97 +382,125 @@ def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-def test_udp_port(ip: str, port: int, timeout: float = 1.0) -> Tuple[bool, str]:
-    """Basic UDP reachability test using an empty probe."""
+def test_udp_port(ip: str, port: int) -> Tuple[bool, str]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.settimeout(timeout)
+    s.settimeout(1.0)
     try:
         s.sendto(b"\x00", (ip, port))
         s.close()
-        return True, "SENT (UDP Stateless)"
+        return True, "SENT (Stateless)"
     except Exception as e:
         return False, str(e)
 
-def run_diagnostics(target_ip: str = None):
-    print("=" * 75)
-    print("  ENTERPRISE CASTING DIAGNOSTIC SUITE (cast-diag)")
-    print("  Miracast (MS-MICE) | Airtame | Apple AirPlay | Google Cast")
-    print("=" * 75)
+def run_phase3_ports(target_ip: str):
+    print("\n" + "=" * 78)
+    print(f"  PHASE 3: L4 PROTOCOL & FIREWALL PERMISSION AUDIT ({target_ip})")
+    print("=" * 78)
+    print(f"{'Protocol Family':<26} | {'Port':<8} | {'Service':<25} | {'Status':<8} | {'Latency / Detail'}")
+    print("-" * 78)
 
-    print("\n[*] Phase 1: Probing Multicast DNS (mDNS) Discovery on local segment...")
-    mdns_results = probe_mdns(timeout=3.0)
+    results = {}
+    for group, ports in PORT_MATRIX.items():
+        for p in ports:
+            port_num = p["port"]
+            proto = p["proto"]
+            if proto == "TCP":
+                ok, detail = test_tcp_port(target_ip, port_num)
+                status = "PASS" if ok else "FAIL"
+            else:
+                ok, detail = test_udp_port(target_ip, port_num)
+                status = "PASS" if ok else "WARN"
 
-    any_found = False
-    for service, records in mdns_results.items():
-        svc_meta = CAST_SERVICES[service]
-        if records:
-            any_found = True
-            print(f"  [+] FOUND {svc_meta['name']} ({service}):")
-            for r in records:
-                print(f"      -> Device at {r['ip']}:{r['port']}")
-        else:
-            print(f"  [-] NOT DETECTED: {svc_meta['name']} ({service})")
+            results[f"{proto}:{port_num}"] = ok
+            print(f"{group:<26} | {proto} {port_num:<4} | {p['name']:<25} | {status:<8} | {detail}")
 
-    if not any_found:
-        print("\n  [!] CAUTION: No casting mDNS advertisements received!")
-        print("      * Juniper Mist: Check if 'Bonjour Gateway' is enabled and maps these services.")
-        print("      * Juniper Mist: Verify 'Multicast to Unicast conversion' is enabled.")
-        print("      * Junos Switch: Verify IGMP snooping querier is active.")
+    print("-" * 78)
+    return results
 
-    print("\n[*] Phase 2: Probing SSDP / UPnP / DIAL (UDP 1900, 239.255.255.250)...")
-    ssdp_devices = probe_ssdp(timeout=2.5)
-    if ssdp_devices:
-        for dev in ssdp_devices:
-            print(f"  [+] FOUND UPnP/SSDP Device at {dev['ip']}:")
-            print(f"      Server: {dev['server']}")
-            print(f"      ST: {dev['st']}")
-            if dev['location']:
-                print(f"      URL: {dev['location']}")
+# ==============================================================================
+# Phase 4: Actionable Network Diagnosis & Vendor Guidance
+# ==============================================================================
+def run_phase4_guidance(target_ip: str, port_results: Dict[str, bool], vendor_name: str):
+    print("\n" + "=" * 78)
+    print("  PHASE 4: VENDOR-SPECIFIC REMEDIATION & ROOT CAUSE ANALYSIS")
+    print("=" * 78)
+
+    rtsp_mice = port_results.get("TCP:7236", False)
+    http_ctrl = port_results.get("TCP:80", False) or port_results.get("TCP:8008", False)
+
+    if not rtsp_mice:
+        print("\n  [CRITICAL FINDING: MIRACAST RTSP BLOCKED]")
+        print("  * Windows 10/11 'Win + K' connects over TCP 7236. Because this port failed:")
+        print("    -> Airtame / Newline displays will fail native PIN setup and prompt for an app.")
+        print("    -> Remedy (Juniper Mist): In WLAN > L2/L3 Access Lists, permit TCP 7236 and UDP 7250-7254.")
+        print("    -> Remedy (Cisco Catalyst / Meraki): Disable Client Isolation on SSID or add walled-garden bypass.")
+        print("    -> Remedy (Aruba): Add rule to user role: 'user any svc-rtsp permit'.")
     else:
-        print("  [-] No SSDP / UPnP responses received.")
-        print("      * Note: SSDP uses 239.255.255.250:1900. If DLNA/DIAL fails, check multicast routing/snooping.")
+        print("\n  [SUCCESS: RTSP TCP 7236 RESPONDING]")
+        print("  * Control session signaling is open. If native casting still does not detect display:")
+        print("    -> The issue is strictly L2 mDNS discovery / IGMP snooping dropping _display._tcp.")
 
-    if target_ip:
-        print(f"\n[*] Phase 3: Direct L4 Transport & Port Audit on Target: {target_ip}")
-        print("-" * 75)
-        print(f"{'Protocol':<20} | {'Port':<8} | {'Service':<25} | {'Status':<8} | {'Details'}")
-        print("-" * 75)
+    print("\n  [INFRASTRUCTURE CONFIGURATION CHECKLIST]")
+    print("  1. Juniper Mist: Wireless > WLANs > [SSID]")
+    print("     - Check: 'Multicast to Unicast conversion'")
+    print("     - Check: 'Bonjour Gateway' -> Map services: _display._tcp, _airplay._tcp, _googlecast._tcp")
+    print("     - Uncheck: 'No Local Traffic (isolate clients)' if sharing VLAN with displays.")
+    print("  2. Junos EX Switching:")
+    print("     - Verify IGMP Querier: 'set protocols igmp interface <irb-interface>'")
+    print("     - Verify snooping: 'show igmp snooping membership'")
+    print("  3. Aruba / HP ProCurve / CX:")
+    print("     - Enable AirGroup for Miracast & AirPlay: 'airgroup service miracast enable'")
+    print("  4. Cisco Meraki:")
+    print("     - Wireless > Configure > Access Control > Addressing: Change from 'NAT Mode' to 'Bridge Mode'")
 
-        for proto_category, ports in PORT_MATRIX.items():
-            for p in ports:
-                port_num = p["port"]
-                proto = p["proto"]
-                if proto == "TCP":
-                    success, detail = test_tcp_port(target_ip, port_num)
-                    status_str = "PASS" if success else "FAIL"
-                else:
-                    success, detail = test_udp_port(target_ip, port_num)
-                    status_str = "PASS" if success else "WARN"
+    print("\n" + "=" * 78)
+    print("Diagnostics completed.\n")
 
-                print(f"{proto_category:<20} | {proto} {port_num:<4} | {p['name']:<25} | {status_str:<8} | {detail}")
-
-        print("-" * 75)
-        print("\n[*] Phase 4: Actionable Findings & Analysis:")
-        
-        # Specific check for Miracast RTSP 7236
-        rtsp_ok, _ = test_tcp_port(target_ip, 7236, timeout=1.5)
-        if not rtsp_ok:
-            print("  [CRITICAL] Miracast RTSP (TCP 7236) is BLOCKED or UNREACHABLE!")
-            print("  -> Symptoms: Windows will show 'Connecting...' and fail, or prompt for the Airtame app.")
-            print("  -> Fix: On Juniper Mist, inspect WLAN L2/L3 Access Lists / Policies and allow TCP 7236.")
-        else:
-            print("  [SUCCESS] Miracast RTSP (TCP 7236) is open and responding.")
-            print("  -> If Windows still does not discover it, the issue is 100% mDNS discovery (_display._tcp).")
-
-    print("\n" + "=" * 75)
-    print("Diagnostics completed.")
-
+# ==============================================================================
+# Main Orchestrator
+# ==============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Enterprise Casting Diagnostic Suite")
-    parser.add_argument("-t", "--target", help="Target Airtame, AppleTV, or Chromecast IP address", default=None)
+    parser = argparse.ArgumentParser(
+        description="Enterprise & Education Casting Diagnostic Suite (cast-diag)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Breakpoints & Phase Groups:
+  Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit (mDNS UDP 5353 & SSDP UDP 1900)
+  Phase 2: Vendor Fingerprinting (Airtame, Newline, SMART, Promethean, Barco, Apple, Google)
+  Phase 3: L4 Protocol & Firewall Port Audit (RTSP 7236, AirPlay 7000/7100, Cast 8008/8009)
+  Phase 4: Root Cause Synthesis & Vendor Configuration Checklist (Mist, Junos, Cisco, Aruba)
+        """
+    )
+    parser.add_argument("-t", "--target", help="Target Display IP (Airtame, Newline Board, Apple TV, etc.)")
+    parser.add_argument("--monitor", type=int, default=0, help="Run Phase 1 IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4], help="Run only a specific diagnostic phase (1-4)")
+
     args = parser.parse_args()
 
-    run_diagnostics(target_ip=args.target)
+    # Phase 1: L2 Discovery
+    if not args.phase or args.phase == 1:
+        discovered_mdns, discovered_ssdp = run_phase1_discovery(timeout=3.0, monitor_interval=args.monitor)
+    else:
+        discovered_mdns, discovered_ssdp = {}, []
+
+    if args.target:
+        # Phase 2: Vendor Fingerprinting
+        if not args.phase or args.phase == 2:
+            vendor = run_phase2_fingerprint(args.target, discovered_mdns, discovered_ssdp)
+        else:
+            vendor = "Unknown"
+
+        # Phase 3: L4 Ports
+        if not args.phase or args.phase == 3:
+            port_results = run_phase3_ports(args.target)
+        else:
+            port_results = {}
+
+        # Phase 4: Guidance
+        if not args.phase or args.phase == 4:
+            run_phase4_guidance(args.target, port_results, vendor)
+    elif not args.phase or args.phase > 1:
+        print("\n[*] Note: Specify -t <IP> to run Phase 2 (Fingerprint), Phase 3 (Ports), and Phase 4 (Analysis).")
 
 if __name__ == "__main__":
     main()

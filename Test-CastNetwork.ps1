@@ -60,6 +60,8 @@ $PortTests = @(
     @{ Proto="AirPlay";  Port=7100; Type="TCP"; Name="Apple AirPlay Mirroring";         Critical=$false },
     @{ Proto="DIAL/Cast";Port=8008; Type="TCP"; Name="Google Cast DIAL / HTTP";        Critical=$false },
     @{ Proto="DIAL/Cast";Port=8009; Type="TCP"; Name="Google Cast TLS Control";         Critical=$false },
+    @{ Proto="Newline";  Port=8000; Type="TCP"; Name="Newline Cast / Clevershare";      Critical=$false },
+    @{ Proto="IFP/Admin";Port=8443; Type="TCP"; Name="Newline / SMART Board Admin";     Critical=$false },
     @{ Proto="DLNA/UPnP";Port=2869; Type="TCP"; Name="UPnP Eventing (Windows Media)";   Critical=$false },
     @{ Proto="DLNA/UPnP";Port=5000; Type="TCP"; Name="DLNA MediaRenderer Port";        Critical=$false },
     @{ Proto="Crestron"; Port=41794;Type="TCP"; Name="Crestron CIP AirMedia";           Critical=$false },
