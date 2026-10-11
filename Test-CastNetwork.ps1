@@ -26,21 +26,53 @@ Write-Host "====================================================================
 Write-Host "  WINDOWS NATIVE CASTING DIAGNOSTIC SUITE (Test-CastNetwork.ps1)" -ForegroundColor Cyan
 Write-Host "==========================================================================" -ForegroundColor Cyan
 
-# 1. Inspect Wi-Fi Adapter & Miracast Support
-Write-Host "`n[1/4] Checking Local Host Miracast & Wi-Fi Capabilities..." -ForegroundColor Yellow
+# Phase 0: Client Pre-Flight Prerequisites Check
+Write-Host "`n[Phase 0] Validating Windows Client Prerequisites..." -ForegroundColor Yellow
+
+# 1. PowerShell version
+$psVer = $PSVersionTable.PSVersion
+Write-Host "  [+] PowerShell Engine: $psVer" -ForegroundColor Green
+
+# 2. Network Adapter State
+$activeAdapter = Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1
+if ($activeAdapter) {
+    Write-Host ("  [+] Active Network Adapter: {0} ({1}) - Status: {2}" -f $activeAdapter.Name, $activeAdapter.InterfaceDescription, $activeAdapter.Status) -ForegroundColor Green
+} else {
+    Write-Host "  [!] No active network adapter detected with Status 'Up'!" -ForegroundColor Red
+}
+
+# 3. Wi-Fi Display / NDIS Driver Capability
 try {
     $ndis = netsh wlan show drivers | Select-String "Wireless Display Supported"
     if ($ndis) {
-        Write-Host "  [+] $ndis" -ForegroundColor Green
+        if ($ndis -match "Yes") {
+            Write-Host "  [+] $ndis" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] $ndis (Client driver may not support Miracast P2P)" -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "  [-] Could not query driver display support via netsh." -ForegroundColor DarkGray
+        Write-Host "  [-] Could not query wireless driver display support via netsh." -ForegroundColor DarkGray
     }
 } catch {
     Write-Host "  [-] Error querying wireless driver: $_" -ForegroundColor Red
 }
 
-# 2. ICMP Ping Test
-Write-Host "`n[2/4] Testing ICMP Reachability to $TargetIp..." -ForegroundColor Yellow
+# 4. Bluetooth Radio Status (Optional BLE proximity check)
+try {
+    $btRadio = Get-PnpDevice -Class "Bluetooth" -Status "OK" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($btRadio) {
+        Write-Host ("  [+] Bluetooth Radio Detected: {0}" -f $btRadio.FriendlyName) -ForegroundColor Green
+    } else {
+        Write-Host "  [-] Bluetooth Radio: Disabled or not present (Wi-Fi infrastructure casting only)" -ForegroundColor DarkGray
+    }
+} catch {
+    Write-Host "  [-] Could not query Bluetooth PnP devices: $_" -ForegroundColor DarkGray
+}
+
+Write-Host "--------------------------------------------------------------------------" -ForegroundColor DarkGray
+
+# 1. ICMP Ping Test
+Write-Host "`n[Phase 1] Testing ICMP Reachability to $TargetIp..." -ForegroundColor Yellow
 $pingResult = Test-Connection -ComputerName $TargetIp -Count 2 -Quiet
 if ($pingResult) {
     Write-Host "  [+] ICMP Ping to $TargetIp SUCCEEDED." -ForegroundColor Green

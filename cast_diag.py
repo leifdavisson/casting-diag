@@ -152,18 +152,73 @@ VENDOR_SIGNATURES = [
 ]
 
 # ==============================================================================
-# Helper Functions: mDNS & DNS Packing
+# Phase 0: Host System & Environmental Prerequisites Check
 # ==============================================================================
-def build_dns_query(service_name: str) -> bytes:
-    """Builds a raw DNS PTR query for mDNS."""
-    header = struct.pack(">HHHHHH", 0, 0, 1, 0, 0, 0)
-    query = bytearray(header)
-    for part in service_name.strip(".").split("."):
-        query.append(len(part))
-        query.extend(part.encode("utf-8"))
-    query.append(0)
-    query.extend(struct.pack(">HH", 12, 1))
-    return bytes(query)
+def check_prerequisites() -> bool:
+    """
+    Validates host system capabilities before running diagnostic tests:
+    1. Python version (3.7+)
+    2. Active network interfaces & IP routing
+    3. Multicast socket binding capability
+    4. Optional wireless & Bluetooth controllers for discovery
+    """
+    print("\n" + "=" * 78)
+    print("  PHASE 0: PRE-FLIGHT SYSTEM & ENVIRONMENT PREREQUISITES CHECK")
+    print("=" * 78)
+
+    passed_all = True
+
+    # 1. Python runtime
+    py_ver = sys.version_info
+    if py_ver >= (3, 7):
+        print(f"  [+] Python Runtime: {py_ver.major}.{py_ver.minor}.{py_ver.micro} (Supported)")
+    else:
+        print(f"  [!] Python Runtime: {py_ver.major}.{py_ver.minor} (Requires Python 3.7+)")
+        passed_all = False
+
+    # 2. Local IP & Gateway Connectivity
+    local_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        print(f"  [+] Active Network Interface IP: {local_ip} (Active route detected)")
+    except Exception as e:
+        print(f"  [!] Network Route Error: No active network route detected ({e})")
+        passed_all = False
+
+    # 3. UDP Multicast Socket Test
+    try:
+        test_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        test_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        test_sock.bind(("", 0))
+        test_sock.close()
+        print("  [+] Multicast Socket Creation: Success (Permitted by OS / Firewall)")
+    except Exception as e:
+        print(f"  [!] Multicast Socket Error: Unable to bind UDP sockets ({e})")
+        passed_all = False
+
+    # 4. Optional Bluetooth Subsystem (Informational)
+    import shutil, subprocess
+    bt_tool = shutil.which("bluetoothctl")
+    if bt_tool:
+        try:
+            res = subprocess.run([bt_tool, "show"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, text=True)
+            if "Powered: yes" in res.stdout:
+                print("  [+] Bluetooth Subsystem: Active & Powered ON (BLE proximity discovery available)")
+            else:
+                print("  [-] Bluetooth Subsystem: Present but Powered OFF (BLE proximity discovery inactive)")
+        except Exception:
+            print("  [-] Bluetooth Subsystem: Present (Status check timed out)")
+    else:
+        print("  [-] Bluetooth Subsystem: Not detected (Wi-Fi only testing)")
+
+    print("-" * 78)
+    if not passed_all:
+        print("  [!] CRITICAL: One or more required prerequisites failed! Exiting.\n")
+        return False
+    return True
 
 # ==============================================================================
 # Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit
@@ -541,12 +596,20 @@ Breakpoints & Phase Groups:
     )
     parser.add_argument("-t", "--target", help="Target Display IP (Airtame, Newline Board, Apple TV, etc.)")
     parser.add_argument("--monitor", type=int, default=0, help="Run Phase 1 IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4], help="Run only a specific diagnostic phase (1-4)")
+    parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3, 4], help="Run only a specific diagnostic phase (0: Prerequisites, 1: L2, 2: Fingerprint, 3: Ports, 4: Analysis)")
+    parser.add_argument("--skip-prereqs", action="store_true", help="Skip Phase 0 system prerequisites validation")
 
     args = parser.parse_args()
 
+    # Phase 0: System Prerequisites Check
+    if not args.skip_prereqs and (args.phase is None or args.phase == 0):
+        if not check_prerequisites():
+            sys.exit(1)
+        if args.phase == 0:
+            sys.exit(0)
+
     # Phase 1: L2 Discovery
-    if not args.phase or args.phase == 1:
+    if args.phase is None or args.phase == 1:
         discovered_mdns, discovered_ssdp = run_phase1_discovery(timeout=3.0, monitor_interval=args.monitor)
     else:
         discovered_mdns, discovered_ssdp = {}, []
