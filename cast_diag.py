@@ -627,18 +627,68 @@ Breakpoints & Phase Groups:
     else:
         discovered_mdns, discovered_ssdp = {}, []
 
+    targets_to_audit = []
     if args.target:
-        # Phase 2: Vendor Fingerprinting
-        vendor = run_phase2_fingerprint(args.target, discovered_mdns, discovered_ssdp) if (args.phase is None or args.phase == 2) else "Unknown"
+        targets_to_audit.append(args.target)
+    elif discovered_mdns or discovered_ssdp:
+        # Collect all unique IPs discovered in Phase 1
+        found_ips = set()
+        for records in discovered_mdns.values():
+            for r in records:
+                found_ips.add(r["ip"])
+        for s in discovered_ssdp:
+            found_ips.add(s["ip"])
 
-        # Phase 3: L4 Ports
-        port_results = run_phase3_ports(args.target) if (args.phase is None or args.phase == 3) else {}
+        sorted_ips = sorted(found_ips)
+        if len(sorted_ips) == 1:
+            auto_ip = sorted_ips[0]
+            print(f"\n[+] Auto-Targeting single discovered display at: {auto_ip}")
+            targets_to_audit.append(auto_ip)
+        elif len(sorted_ips) > 1:
+            print("\n" + "=" * 78)
+            print("  MULTIPLE CASTING TARGETS DETECTED")
+            print("=" * 78)
+            for idx, ip in enumerate(sorted_ips, 1):
+                # Try to find friendly name
+                name = ""
+                for s in discovered_ssdp:
+                    if s["ip"] == ip and s.get("friendly_name"):
+                        name = f" - '{s['friendly_name']}'"
+                        break
+                print(f"  [{idx}] {ip}{name}")
+            print(f"  [A] Audit All ({len(sorted_ips)} devices)")
+            print("  [Q] Quit")
 
-        # Phase 4: Guidance
-        if args.phase is None or args.phase == 4:
-            run_phase4_guidance(args.target, port_results, vendor)
-    elif not args.phase or args.phase > 1:
-        print("\n[*] Note: Specify -t <IP> to run Phase 2 (Fingerprint), Phase 3 (Ports), and Phase 4 (Analysis).")
+            try:
+                choice = input("\nSelect device to audit [Default: 1]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                choice = "1"
+
+            if not choice:
+                choice = "1"
+
+            if choice.upper() == "A":
+                targets_to_audit.extend(sorted_ips)
+            elif choice.upper() == "Q":
+                sys.exit(0)
+            elif choice.isdigit() and 1 <= int(choice) <= len(sorted_ips):
+                targets_to_audit.append(sorted_ips[int(choice) - 1])
+            else:
+                targets_to_audit.append(sorted_ips[0])
+
+    if targets_to_audit:
+        for target in targets_to_audit:
+            # Phase 2: Vendor Fingerprinting
+            vendor = run_phase2_fingerprint(target, discovered_mdns, discovered_ssdp) if (args.phase is None or args.phase == 2) else "Unknown"
+
+            # Phase 3: L4 Ports
+            port_results = run_phase3_ports(target) if (args.phase is None or args.phase == 3) else {}
+
+            # Phase 4: Guidance
+            if args.phase is None or args.phase == 4:
+                run_phase4_guidance(target, port_results, vendor)
+    elif args.phase is None or args.phase > 1:
+        print("\n[*] Note: No devices discovered in Phase 1. Specify '-t <IP>' to manually audit a display.")
 
 if __name__ == "__main__":
     main()
