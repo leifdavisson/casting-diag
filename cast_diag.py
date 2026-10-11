@@ -11,13 +11,12 @@ Supported Ecosystems:
 Licensed under GNU AGPLv3.
 """
 
-import sys
-import socket
-import struct
-import time
 import argparse
 import select
-from typing import Dict, List, Tuple, Optional
+import socket
+import struct
+import sys
+import time
 
 # ==============================================================================
 # Protocol & Multicast Constants
@@ -200,11 +199,12 @@ def check_prerequisites() -> bool:
         passed_all = False
 
     # 4. Optional Bluetooth Subsystem (Informational)
-    import shutil, subprocess
+    import shutil
+    import subprocess
     bt_tool = shutil.which("bluetoothctl")
     if bt_tool:
         try:
-            res = subprocess.run([bt_tool, "show"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, text=True)
+            res = subprocess.run([bt_tool, "show"], capture_output=True, timeout=2, text=True)
             if "Powered: yes" in res.stdout:
                 print("  [+] Bluetooth Subsystem: Active & Powered ON (BLE proximity discovery available)")
             else:
@@ -237,7 +237,7 @@ def build_dns_query(service_name: str) -> bytes:
 # ==============================================================================
 # Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit
 # ==============================================================================
-def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
+def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> tuple[dict[str, list[dict]], list[dict]]:
     """
     Audits L2 Multicast (mDNS & SSDP). If monitor_interval > 0, performs an IGMP
     longevity test to detect premature multicast group pruning.
@@ -245,7 +245,7 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
     print("\n" + "=" * 78)
     print("  PHASE 1: L2 MULTICAST & AIRGROUP/BONJOUR GATEWAY AUDIT")
     print("=" * 78)
-    print(f"[*] Transmitting mDNS (UDP 5353) and SSDP (UDP 1900) discovery datagrams...")
+    print("[*] Transmitting mDNS (UDP 5353) and SSDP (UDP 1900) discovery datagrams...")
 
     # Set up mDNS socket
     sock_mdns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -297,7 +297,7 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
             'MAN: "ssdp:discover"\r\n'
             "MX: 2\r\n"
             f"ST: {st_target}\r\n\r\n"
-        ).encode("utf-8")
+        ).encode()
         try:
             sock_ssdp.sendto(ssdp_req, (SSDP_GROUP, SSDP_PORT))
         except Exception:
@@ -360,7 +360,8 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
                         # Attempt fast parse of XML location for friendlyName
                         if loc and loc.startswith("http"):
                             try:
-                                import urllib.request, xml.etree.ElementTree as ET
+                                import urllib.request
+                                import xml.etree.ElementTree as ET
                                 with urllib.request.urlopen(loc, timeout=1.0) as resp:
                                     root_xml = ET.fromstring(resp.read(4096))
                                     for elem in root_xml.iter():
@@ -411,7 +412,7 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
 # ==============================================================================
 # Phase 2: Vendor Fingerprinting & Ecosystem Identification
 # ==============================================================================
-def run_phase2_fingerprint(target_ip: str, discovered_mdns: Dict[str, List[Dict]], discovered_ssdp: List[Dict]) -> str:
+def run_phase2_fingerprint(target_ip: str, discovered_mdns: dict[str, list[dict]], discovered_ssdp: list[dict]) -> str:
     """
     Inspects responses and performs banner audits to identify the vendor/device.
     """
@@ -478,7 +479,7 @@ def run_phase2_fingerprint(target_ip: str, discovered_mdns: Dict[str, List[Dict]
 # ==============================================================================
 # Phase 3: L4 Port & Firewall Inspection
 # ==============================================================================
-def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:
+def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> tuple[bool, str]:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     start = time.perf_counter()
@@ -487,14 +488,14 @@ def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:
         ms = (time.perf_counter() - start) * 1000
         s.close()
         return True, f"{ms:.1f}ms (Open)"
-    except socket.timeout:
+    except TimeoutError:
         return False, "TIMEOUT (Firewall / Filter Dropped)"
     except ConnectionRefusedError:
         return False, "REFUSED (Host up, Port closed)"
     except Exception as e:
         return False, str(e)
 
-def test_udp_port(ip: str, port: int) -> Tuple[bool, str]:
+def test_udp_port(ip: str, port: int) -> tuple[bool, str]:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(1.0)
     try:
@@ -532,14 +533,12 @@ def run_phase3_ports(target_ip: str):
 # ==============================================================================
 # Phase 4: Root Cause Synthesis & Protocol-Level Remediation
 # ==============================================================================
-def run_phase4_guidance(target_ip: str, port_results: Dict[str, bool], vendor_name: str):
+def run_phase4_guidance(target_ip: str, port_results: dict[str, bool], vendor_name: str):
     print("\n" + "=" * 78)
     print("  PHASE 4: ARCHITECTURAL ROOT CAUSE SYNTHESIS & RESOLUTION")
     print("=" * 78)
 
     rtsp_mice = port_results.get("TCP:7236", False)
-    airplay_ctrl = port_results.get("TCP:7000", False) or port_results.get("TCP:7100", False)
-    cast_ctrl = port_results.get("TCP:8008", False) or port_results.get("TCP:8009", False)
 
     print(f"\n[TARGET ECOSYSTEM]: {vendor_name} ({target_ip})")
 
@@ -630,19 +629,13 @@ Breakpoints & Phase Groups:
 
     if args.target:
         # Phase 2: Vendor Fingerprinting
-        if not args.phase or args.phase == 2:
-            vendor = run_phase2_fingerprint(args.target, discovered_mdns, discovered_ssdp)
-        else:
-            vendor = "Unknown"
+        vendor = run_phase2_fingerprint(args.target, discovered_mdns, discovered_ssdp) if (args.phase is None or args.phase == 2) else "Unknown"
 
         # Phase 3: L4 Ports
-        if not args.phase or args.phase == 3:
-            port_results = run_phase3_ports(args.target)
-        else:
-            port_results = {}
+        port_results = run_phase3_ports(args.target) if (args.phase is None or args.phase == 3) else {}
 
         # Phase 4: Guidance
-        if not args.phase or args.phase == 4:
+        if args.phase is None or args.phase == 4:
             run_phase4_guidance(args.target, port_results, vendor)
     elif not args.phase or args.phase > 1:
         print("\n[*] Note: Specify -t <IP> to run Phase 2 (Fingerprint), Phase 3 (Ports), and Phase 4 (Analysis).")
