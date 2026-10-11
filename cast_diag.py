@@ -593,26 +593,110 @@ def run_phase4_guidance(target_ip: str, port_results: dict[str, bool], vendor_na
     print("Diagnostics completed.\n")
 
 # ==============================================================================
-# Main Orchestrator
+# Helpdesk Ticket Generator & Comparison Engine
+# ==============================================================================
+def generate_ticket_snippet(target_ip: str, vendor_name: str, port_results: dict[str, bool], local_ip: str) -> str:
+    """Generates an executive verdict and a pre-formatted snippet ready for Jira/ServiceNow."""
+    rtsp_ok = port_results.get("TCP:7236", False)
+    airplay_ok = port_results.get("TCP:7000", False) or port_results.get("TCP:7100", False)
+    cast_ok = port_results.get("TCP:8009", False) or port_results.get("TCP:8008", False)
+
+    if not rtsp_ok:
+        verdict = "FAIL - Wi-Fi/Switch Firewall Policy Blocking Miracast Signaling (TCP 7236)"
+        action = "Network Engineering: Permit TCP 7236 & UDP 7250-7254 on SSID profile or remove client isolation."
+    elif not (airplay_ok or cast_ok):
+        verdict = "WARNING - Signaling Reachable, but Native Mirroring Services Unresponsive"
+        action = "Check display settings to ensure AirPlay/Cast/Miracast toggles are enabled on the receiver."
+    else:
+        verdict = "PASS - Core L4 Transport Reachable (Inspect L2 mDNS/Bonjour Gateway if discovery fails)"
+        action = "Network Engineering: Verify mDNS Gateway maps _display._tcp / _airplay._tcp on wireless controller."
+
+    snippet = f"""
+==================== TICKET ESCALATION SUMMARY (COPY & PASTE) ====================
+Incident Category: Screen Casting / Wireless Presentation Failure
+Client Source IP : {local_ip}
+Target Display IP: {target_ip} ({vendor_name})
+Executive Verdict: {verdict}
+Tested Transport : Miracast RTSP (7236): {'OPEN' if rtsp_ok else 'BLOCKED'} | HTTP API: {'OPEN' if port_results.get('TCP:80') else 'CLOSED'}
+Escalation Action: {action}
+Timestamp        : {time.strftime('%Y-%m-%d %H:%M:%S')}
+==================================================================================
+"""
+    return snippet
+
+def run_ab_comparison(ip_working: str, ip_failing: str, local_ip: str):
+    """Compares a working display against a failing display side-by-side."""
+    print("\n" + "=" * 78)
+    print("  A/B COMPARISON MODE: WORKING DISPLAY VS. FAILING DISPLAY")
+    print("=" * 78)
+    print(f"  Working Target : {ip_working}")
+    print(f"  Failing Target : {ip_failing}\n")
+
+    ports_working = run_phase3_ports(ip_working)
+    ports_failing = run_phase3_ports(ip_failing)
+
+    print("\n" + "=" * 78)
+    print(f"{'PROTOCOL / PORT':<28} | {'WORKING (' + ip_working + ')':<22} | {'FAILING (' + ip_failing + ')':<22}")
+    print("-" * 78)
+
+    keys = set(ports_working.keys()).union(set(ports_failing.keys()))
+    for k in sorted(keys):
+        w_status = "PASS (Open)" if ports_working.get(k) else "FAIL / Closed"
+        f_status = "PASS (Open)" if ports_failing.get(k) else "FAIL / Closed"
+        marker = " " if ports_working.get(k) == ports_failing.get(k) else "*"
+        print(f"{marker} {k:<26} | {w_status:<22} | {f_status:<22}")
+
+    print("-" * 78)
+    print("  * Indicates a difference between the two devices.")
+
+    # High-level diff analysis
+    if ports_working.get("TCP:7236") and not ports_failing.get("TCP:7236"):
+        print("\n  [ROOT CAUSE IDENTIFIED BY COMPARISON]:")
+        print(f"  TCP 7236 (Miracast RTSP) is OPEN on {ip_working} but BLOCKED on {ip_failing}.")
+        print("  -> Conclusion: The failing room is connected to a switch port or VLAN with an active ACL")
+        print("     or guest isolation policy that the working room is not subject to.")
+
+    snippet = generate_ticket_snippet(ip_failing, "Failing Room Display", ports_failing, local_ip)
+    print(snippet)
+
+# ==============================================================================
+# Main Orchestrator: Guided Workflow (Default) & Zero-Config Batch Mode
 # ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
         description="Enterprise & Education Casting Diagnostic Suite (cast-diag)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Breakpoints & Phase Groups:
-  Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit (mDNS UDP 5353 & SSDP UDP 1900)
-  Phase 2: Vendor Fingerprinting (Airtame, Newline, SMART, Promethean, Barco, Apple, Google)
-  Phase 3: L4 Protocol & Firewall Port Audit (RTSP 7236, AirPlay 7000/7100, Cast 8008/8009)
-  Phase 4: Root Cause Synthesis & Vendor Configuration Checklist (Mist, Junos, Cisco, Aruba)
+Modes:
+  Default (Guided) : Step-by-step interactive workflow tailored for Helpdesk and field techs.
+  --zero-config    : Automated non-interactive batch mode (audits all discovered targets).
+  --compare <W> <F>: A/B diff test between a working display (W) and a failing display (F).
         """
     )
-    parser.add_argument("-t", "--target", help="Target Display IP (Airtame, Newline Board, Apple TV, etc.)")
-    parser.add_argument("--monitor", type=int, default=0, help="Run Phase 1 IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
-    parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3, 4], help="Run only a specific diagnostic phase (0: Prerequisites, 1: L2, 2: Fingerprint, 3: Ports, 4: Analysis)")
+    parser.add_argument("-t", "--target", help="Target Display IP address")
+    parser.add_argument("--compare", nargs=2, metavar=("WORKING_IP", "FAILING_IP"), help="Run side-by-side A/B comparison")
+    parser.add_argument("--zero-config", action="store_true", help="Non-interactive batch mode; auto-audit all discovered devices")
+    parser.add_argument("--export", action="store_true", help="Export summary to a text file for ticket attachments")
+    parser.add_argument("--monitor", type=int, default=0, help="Run IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
+    parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3, 4], help="Run only a specific diagnostic phase (0-4)")
     parser.add_argument("--skip-prereqs", action="store_true", help="Skip Phase 0 system prerequisites validation")
 
     args = parser.parse_args()
+
+    # Determine local client IP
+    local_ip = "127.0.0.1"
+    try:
+        s_ip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s_ip.connect(("8.8.8.8", 80))
+        local_ip = s_ip.getsockname()[0]
+        s_ip.close()
+    except Exception:
+        pass
+
+    # A/B Comparison Shortcut
+    if args.compare:
+        run_ab_comparison(args.compare[0], args.compare[1], local_ip)
+        return
 
     # Phase 0: System Prerequisites Check
     if not args.skip_prereqs and (args.phase is None or args.phase == 0):
@@ -627,68 +711,133 @@ Breakpoints & Phase Groups:
     else:
         discovered_mdns, discovered_ssdp = {}, []
 
+    # Collect unique IPs found in Phase 1
+    found_ips = set()
+    for records in discovered_mdns.values():
+        for r in records:
+            found_ips.add(r["ip"])
+    for s in discovered_ssdp:
+        found_ips.add(s["ip"])
+    sorted_ips = sorted(found_ips)
+
     targets_to_audit = []
+
+    # --------------------------------------------------------------------------
+    # Flow A: Explicit Target Provided via CLI (-t)
+    # --------------------------------------------------------------------------
     if args.target:
         targets_to_audit.append(args.target)
-    elif discovered_mdns or discovered_ssdp:
-        # Collect all unique IPs discovered in Phase 1
-        found_ips = set()
-        for records in discovered_mdns.values():
-            for r in records:
-                found_ips.add(r["ip"])
-        for s in discovered_ssdp:
-            found_ips.add(s["ip"])
 
-        sorted_ips = sorted(found_ips)
-        if len(sorted_ips) == 1:
-            auto_ip = sorted_ips[0]
-            print(f"\n[+] Auto-Targeting single discovered display at: {auto_ip}")
-            targets_to_audit.append(auto_ip)
-        elif len(sorted_ips) > 1:
-            print("\n" + "=" * 78)
-            print("  MULTIPLE CASTING TARGETS DETECTED")
-            print("=" * 78)
+    # --------------------------------------------------------------------------
+    # Flow B: Zero-Config Automated Mode (--zero-config)
+    # --------------------------------------------------------------------------
+    elif args.zero_config:
+        if sorted_ips:
+            print(f"\n[--zero-config] Auditing all {len(sorted_ips)} discovered targets automatically...")
+            targets_to_audit.extend(sorted_ips)
+        else:
+            print("\n[--zero-config] No casting devices discovered automatically on local subnet.")
+
+    # --------------------------------------------------------------------------
+    # Flow C: Default Guided Helpdesk Workflow
+    # --------------------------------------------------------------------------
+    else:
+        print("\n" + "=" * 78)
+        print("  GUIDED HELPDESK WORKFLOW: TARGET IDENTIFICATION")
+        print("=" * 78)
+
+        if not sorted_ips:
+            print("  [!] No wireless displays were discovered automatically.")
+            print("      Common cause: The display is on another VLAN or mDNS is blocked by Wi-Fi.")
+            try:
+                manual_ip = input("\n  -> Enter the IP address shown on the physical TV screen: ").strip()
+                if manual_ip:
+                    targets_to_audit.append(manual_ip)
+            except (EOFError, KeyboardInterrupt):
+                pass
+        elif len(sorted_ips) == 1:
+            display_ip = sorted_ips[0]
+            name = ""
+            for s in discovered_ssdp:
+                if s["ip"] == display_ip and s.get("friendly_name"):
+                    name = f" ('{s['friendly_name']}')"
+            print(f"  [+] Detected 1 screen: {display_ip}{name}")
+            try:
+                confirm = input("  -> Audit this display? [Y/n or enter different IP]: ").strip()
+                if not confirm or confirm.lower().startswith("y"):
+                    targets_to_audit.append(display_ip)
+                elif confirm.lower().startswith("n"):
+                    diff_ip = input("  -> Enter the IP address to audit: ").strip()
+                    if diff_ip:
+                        targets_to_audit.append(diff_ip)
+                else:
+                    # User typed an IP address directly
+                    targets_to_audit.append(confirm)
+            except (EOFError, KeyboardInterrupt):
+                targets_to_audit.append(display_ip)
+        else:
+            print(f"  [+] Discovered {len(sorted_ips)} displays on this network:\n")
             for idx, ip in enumerate(sorted_ips, 1):
-                # Try to find friendly name
                 name = ""
                 for s in discovered_ssdp:
                     if s["ip"] == ip and s.get("friendly_name"):
                         name = f" - '{s['friendly_name']}'"
                         break
-                print(f"  [{idx}] {ip}{name}")
-            print(f"  [A] Audit All ({len(sorted_ips)} devices)")
-            print("  [Q] Quit")
+                print(f"      [{idx}] {ip}{name}")
+            print("\n      [C] Compare two devices (A/B Test: Working room vs. Broken room)")
+            print("      [A] Audit all discovered displays")
+            print("      [M] Enter a different IP not listed above")
 
             try:
-                choice = input("\nSelect device to audit [Default: 1]: ").strip()
+                choice = input("\n  -> Select option [Default: 1]: ").strip()
             except (EOFError, KeyboardInterrupt):
                 choice = "1"
 
-            if not choice:
-                choice = "1"
-
-            if choice.upper() == "A":
+            if not choice or choice == "1":
+                targets_to_audit.append(sorted_ips[0])
+            elif choice.upper() == "A":
                 targets_to_audit.extend(sorted_ips)
-            elif choice.upper() == "Q":
-                sys.exit(0)
+            elif choice.upper() == "C":
+                try:
+                    w_ip = input("     -> Enter WORKING display IP: ").strip()
+                    f_ip = input("     -> Enter FAILING display IP: ").strip()
+                    if w_ip and f_ip:
+                        run_ab_comparison(w_ip, f_ip, local_ip)
+                        return
+                except (EOFError, KeyboardInterrupt):
+                    return
+            elif choice.upper() == "M":
+                try:
+                    m_ip = input("     -> Enter target display IP: ").strip()
+                    if m_ip:
+                        targets_to_audit.append(m_ip)
+                except (EOFError, KeyboardInterrupt):
+                    pass
             elif choice.isdigit() and 1 <= int(choice) <= len(sorted_ips):
                 targets_to_audit.append(sorted_ips[int(choice) - 1])
             else:
                 targets_to_audit.append(sorted_ips[0])
 
+    # Run remaining phases against selected target(s)
     if targets_to_audit:
+        full_ticket_reports = []
         for target in targets_to_audit:
-            # Phase 2: Vendor Fingerprinting
             vendor = run_phase2_fingerprint(target, discovered_mdns, discovered_ssdp) if (args.phase is None or args.phase == 2) else "Unknown"
-
-            # Phase 3: L4 Ports
             port_results = run_phase3_ports(target) if (args.phase is None or args.phase == 3) else {}
-
-            # Phase 4: Guidance
             if args.phase is None or args.phase == 4:
                 run_phase4_guidance(target, port_results, vendor)
-    elif args.phase is None or args.phase > 1:
-        print("\n[*] Note: No devices discovered in Phase 1. Specify '-t <IP>' to manually audit a display.")
+
+            # Generate Ticket Snippet
+            ticket_block = generate_ticket_snippet(target, vendor, port_results, local_ip)
+            print(ticket_block)
+            full_ticket_reports.append(ticket_block)
+
+        # Export if requested
+        if args.export:
+            filename = f"cast_audit_{time.strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(filename, "w") as f:
+                f.write("\n".join(full_ticket_reports))
+            print(f"[+] Full audit report exported to file: {filename}\n")
 
 if __name__ == "__main__":
     main()
