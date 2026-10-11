@@ -19,6 +19,8 @@ MDNS_GROUP = "224.0.0.251"
 MDNS_PORT = 5353
 SSDP_GROUP = "239.255.255.250"
 SSDP_PORT = 1900
+WSD_GROUP = "239.255.255.250"
+WSD_PORT = 3702
 
 CAST_SERVICES = {
     "_display._tcp.local": {
@@ -46,6 +48,16 @@ CAST_SERVICES = {
         "protocol": "Google Cast",
         "description": "Chromecast and Google Nest hub discovery",
     },
+    "_clickshare._tcp.local": {
+        "name": "Barco ClickShare",
+        "protocol": "ClickShare",
+        "description": "Enterprise presentation base unit discovery",
+    },
+    "_solstice._tcp.local": {
+        "name": "Mersive Solstice Pod",
+        "protocol": "Solstice",
+        "description": "Mersive Solstice wireless collaboration display",
+    },
 }
 
 PORT_MATRIX = {
@@ -62,9 +74,17 @@ PORT_MATRIX = {
         {"port": 7000, "proto": "TCP", "name": "AirPlay Service", "critical": True, "desc": "AirPlay stream initiation"},
         {"port": 7100, "proto": "TCP", "name": "AirPlay Mirroring", "critical": True, "desc": "Screen mirroring session"},
     ],
-    "Google Cast": [
-        {"port": 8008, "proto": "TCP", "name": "HTTP API", "critical": True, "desc": "DIAL / Cast REST control"},
+    "Google Cast / DIAL": [
+        {"port": 8008, "proto": "TCP", "name": "HTTP DIAL / REST", "critical": True, "desc": "DIAL / Cast REST control & 1st gen Chromecast"},
         {"port": 8009, "proto": "TCP", "name": "TLS Cast Channel", "critical": True, "desc": "Encrypted protobuf cast control"},
+    ],
+    "DLNA / UPnP": [
+        {"port": 2869, "proto": "TCP", "name": "UPnP Eventing / ICS", "critical": False, "desc": "Windows Media Player / DLNA renderer"},
+        {"port": 5000, "proto": "TCP", "name": "UPnP MediaRenderer", "critical": False, "desc": "Smart TV DLNA control endpoint"},
+    ],
+    "Crestron / Barco": [
+        {"port": 41794, "proto": "TCP", "name": "Crestron CIP", "critical": False, "desc": "Crestron AirMedia gateway control"},
+        {"port": 8080, "proto": "TCP", "name": "Barco ClickShare Web", "critical": False, "desc": "ClickShare control & streaming interface"},
     ],
 }
 
@@ -172,6 +192,69 @@ def probe_mdns(timeout: float = 3.0) -> Dict[str, List[Dict]]:
     sock.close()
     return discovered
 
+def probe_ssdp(timeout: float = 3.0) -> List[Dict]:
+    """Probes the local L2 segment for SSDP / UPnP / DIAL devices."""
+    ssdp_request = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        f"HOST: {SSDP_GROUP}:{SSDP_PORT}\r\n"
+        'MAN: "ssdp:discover"\r\n'
+        "MX: 2\r\n"
+        "ST: ssdp:all\r\n\r\n"
+    ).encode("utf-8")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    sock.settimeout(timeout)
+
+    discovered = []
+    try:
+        sock.bind(("", 0))
+        sock.sendto(ssdp_request, (SSDP_GROUP, SSDP_PORT))
+    except Exception as e:
+        print(f"[-] Could not send SSDP discovery probe: {e}")
+        sock.close()
+        return discovered
+
+    start_time = time.time()
+    seen_ips = set()
+    while time.time() - start_time < timeout:
+        remaining = timeout - (time.time() - start_time)
+        if remaining <= 0:
+            break
+        r, _, _ = select.select([sock], [], [], remaining)
+        if not r:
+            break
+        try:
+            data, addr = sock.recvfrom(4096)
+            ip = addr[0]
+            if ip not in seen_ips:
+                seen_ips.add(ip)
+                raw_text = data.decode("utf-8", errors="replace")
+                server = ""
+                st = ""
+                location = ""
+                for line in raw_text.splitlines():
+                    lower = line.lower()
+                    if lower.startswith("server:"):
+                        server = line.split(":", 1)[1].strip()
+                    elif lower.startswith("st:"):
+                        st = line.split(":", 1)[1].strip()
+                    elif lower.startswith("location:"):
+                        location = line.split(":", 1)[1].strip()
+
+                discovered.append({
+                    "ip": ip,
+                    "server": server or "Generic UPnP",
+                    "st": st or "Unknown",
+                    "location": location
+                })
+        except Exception:
+            break
+
+    sock.close()
+    return discovered
+
 def test_tcp_port(ip: str, port: int, timeout: float = 2.0) -> Tuple[bool, str]:
     """Tests TCP connection to target port."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -226,10 +309,23 @@ def run_diagnostics(target_ip: str = None):
         print("      * Juniper Mist: Verify 'Multicast to Unicast conversion' is enabled.")
         print("      * Junos Switch: Verify IGMP snooping querier is active.")
 
+    print("\n[*] Phase 2: Probing SSDP / UPnP / DIAL (UDP 1900, 239.255.255.250)...")
+    ssdp_devices = probe_ssdp(timeout=2.5)
+    if ssdp_devices:
+        for dev in ssdp_devices:
+            print(f"  [+] FOUND UPnP/SSDP Device at {dev['ip']}:")
+            print(f"      Server: {dev['server']}")
+            print(f"      ST: {dev['st']}")
+            if dev['location']:
+                print(f"      URL: {dev['location']}")
+    else:
+        print("  [-] No SSDP / UPnP responses received.")
+        print("      * Note: SSDP uses 239.255.255.250:1900. If DLNA/DIAL fails, check multicast routing/snooping.")
+
     if target_ip:
-        print(f"\n[*] Phase 2: Direct L4 Transport & Port Audit on Target: {target_ip}")
+        print(f"\n[*] Phase 3: Direct L4 Transport & Port Audit on Target: {target_ip}")
         print("-" * 75)
-        print(f"{'Protocol':<12} | {'Port':<8} | {'Service':<22} | {'Status':<8} | {'Details'}")
+        print(f"{'Protocol':<20} | {'Port':<8} | {'Service':<25} | {'Status':<8} | {'Details'}")
         print("-" * 75)
 
         for proto_category, ports in PORT_MATRIX.items():
@@ -243,10 +339,10 @@ def run_diagnostics(target_ip: str = None):
                     success, detail = test_udp_port(target_ip, port_num)
                     status_str = "PASS" if success else "WARN"
 
-                print(f"{proto_category:<12} | {proto} {port_num:<4} | {p['name']:<22} | {status_str:<8} | {detail}")
+                print(f"{proto_category:<20} | {proto} {port_num:<4} | {p['name']:<25} | {status_str:<8} | {detail}")
 
         print("-" * 75)
-        print("\n[*] Phase 3: Actionable Findings & Analysis:")
+        print("\n[*] Phase 4: Actionable Findings & Analysis:")
         
         # Specific check for Miracast RTSP 7236
         rtsp_ok, _ = test_tcp_port(target_ip, 7236, timeout=1.5)
