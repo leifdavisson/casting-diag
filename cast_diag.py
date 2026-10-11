@@ -221,6 +221,20 @@ def check_prerequisites() -> bool:
     return True
 
 # ==============================================================================
+# Helper Functions: mDNS & DNS Packing
+# ==============================================================================
+def build_dns_query(service_name: str) -> bytes:
+    """Builds a raw DNS PTR query for mDNS."""
+    header = struct.pack(">HHHHHH", 0, 0, 1, 0, 0, 0)
+    query = bytearray(header)
+    for part in service_name.strip(".").split("."):
+        query.append(len(part))
+        query.extend(part.encode("utf-8"))
+    query.append(0)
+    query.extend(struct.pack(">HH", 12, 1))
+    return bytes(query)
+
+# ==============================================================================
 # Phase 1: L2 Multicast & AirGroup/Bonjour Gateway Audit
 # ==============================================================================
 def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tuple[Dict[str, List[Dict]], List[Dict]]:
