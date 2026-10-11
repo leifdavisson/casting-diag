@@ -412,9 +412,9 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> tup
 # ==============================================================================
 # Phase 1.5: Active Subnet Sweep (Multicast-Silent Display Hunter)
 # ==============================================================================
-def run_subnet_sweep(local_ip: str, timeout: float = 0.25) -> list[dict]:
+def run_subnet_sweep(subnet_or_ip: str, timeout: float = 0.3) -> list[dict]:
     """
-    Sweeps the local /24 subnet for displays that do not advertise on mDNS/SSDP
+    Sweeps a target /24 subnet for displays that do not advertise on mDNS/SSDP
     (multicast-silent) by probing standard casting and media ports concurrently.
     """
     import concurrent.futures
@@ -423,19 +423,20 @@ def run_subnet_sweep(local_ip: str, timeout: float = 0.25) -> list[dict]:
     print("  PHASE 1.5: ACTIVE SUBNET SWEEP (MULTICAST-SILENT DISPLAY HUNTER)")
     print("=" * 78)
 
-    # Derive /24 prefix
-    parts = local_ip.split(".")
+    # Derive /24 prefix from input (e.g., '10.98.2.1' or '10.98.2.0/24')
+    clean_ip = subnet_or_ip.split("/")[0]
+    parts = clean_ip.split(".")
     if len(parts) != 4:
         return []
     prefix = f"{parts[0]}.{parts[1]}.{parts[2]}."
 
     probe_ports = [7236, 8009, 8008, 8082, 8083, 7000, 60000, 5000]
-    print(f"[*] Scanning local subnet {prefix}0/24 for active casting endpoints...")
+    print(f"[*] Scanning target subnet {prefix}0/24 for active casting endpoints...")
 
     detected_silent_displays = []
 
     def check_host(ip: str):
-        if ip == local_ip:
+        if ip == clean_ip:
             return None
         open_ports = []
         for port in probe_ports:
@@ -746,7 +747,7 @@ Modes:
     parser.add_argument("--zero-config", action="store_true", help="Non-interactive batch mode; auto-audit all discovered devices")
     parser.add_argument("--export", action="store_true", help="Export summary to a text file for ticket attachments")
     parser.add_argument("--monitor", type=int, default=0, help="Run IGMP Longevity Monitor for N seconds (detects switch snooping drops)")
-    parser.add_argument("--sweep", action="store_true", help="Force active subnet sweep for multicast-silent displays")
+    parser.add_argument("--sweep", nargs="?", const="AUTO", default=None, help="Active subnet sweep (e.g., --sweep 10.98.2.0/24 or --sweep)")
     parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3, 4], help="Run only a specific diagnostic phase (0-4)")
     parser.add_argument("--skip-prereqs", action="store_true", help="Skip Phase 0 system prerequisites validation")
 
@@ -781,10 +782,16 @@ Modes:
         discovered_mdns, discovered_ssdp = {}, []
 
     # Phase 1.5: Active Subnet Sweep (Multicast-Silent Display Hunter)
-    # Automatically triggers if 0/few devices are found or if --sweep is passed
+    # Automatically triggers if few devices found or if --sweep is passed
     discovered_sweep = []
-    if (args.phase is None or args.phase == 1) and (args.sweep or len(discovered_ssdp) + sum(len(v) for v in discovered_mdns.values()) < 2):
-        discovered_sweep = run_subnet_sweep(local_ip)
+    should_sweep = (args.sweep is not None) or (len(discovered_ssdp) + sum(len(v) for v in discovered_mdns.values()) < 2)
+    if (args.phase is None or args.phase == 1) and should_sweep:
+        sweep_target = local_ip
+        if args.sweep and args.sweep != "AUTO":
+            sweep_target = args.sweep
+        elif args.target:
+            sweep_target = args.target
+        discovered_sweep = run_subnet_sweep(sweep_target)
 
     # Collect unique IPs found across all discovery mechanisms
     found_ips = set()
