@@ -1,86 +1,153 @@
 # casting-diag: Enterprise Casting Diagnostic Suite
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![CI Lint & Validation](https://github.com/leifdavisson/casting-diag/actions/workflows/lint.yml/badge.svg)](https://github.com/leifdavisson/casting-diag/actions)
 
-A network diagnostic toolkit designed for network engineers to audit, diagnose, and troubleshoot **Miracast (MS-MICE)**, **Airtame**, **Apple AirPlay**, and **Google Cast** across enterprise Wi-Fi and switching environments (Juniper Mist, Junos EX, Cisco Catalyst, Aruba, Ruckus).
+A modular network diagnostic toolkit designed for network engineers and helpdesk field technicians to audit, diagnose, and troubleshoot wireless casting and presentation displays (**Miracast MS-MICE**, **Airtame**, **Newline Interactive**, **SMART Board**, **Promethean**, **Barco ClickShare**, **Apple AirPlay**, **Google Cast**, and **DLNA/UPnP/SSDP**) across enterprise Wi-Fi and switching environments (Juniper Mist, Junos EX, Cisco Catalyst/Meraki, Aruba, Ruckus).
 
 ```mermaid
 flowchart TD
-    A["Windows Client (Win + K)"] -->|UDP 5353 mDNS Query| B("Juniper Mist AP")
-    B -->|mDNS Gateway / Multicast Unicast| C("Junos Switch / IGMP Snooper")
-    C -->|Delivers Discovery| D("Airtame / Apple TV / Chromecast")
-    A -->|TCP 7236 RTSP Handshake| D
-    D -->|Prompts for On-Screen PIN| A
-    A -->|UDP 7250-7254 RTP Audio/Video| D
+    subgraph P0["Phase 0: Pre-Flight System Audit"]
+        PR1["Python 3.7+ Runtime"] --> PR2["NIC IP & Routing Path"]
+        PR2 --> PR3["Multicast Socket Permissions"]
+        PR3 --> PR4["Bluetooth / BLE Proximity Status"]
+    end
+
+    subgraph P1["Phase 1: L2 Multicast & AirGroup/Bonjour Gateway"]
+        M1["mDNS (UDP 5353)"] --> M2["SSDP / DIAL (UDP 1900)"]
+        M2 --> M3["IGMP Snooping Longevity Test (--monitor)"]
+    end
+
+    subgraph P15["Phase 1.5: Active Subnet Sweep (Gap 1 Hunter)"]
+        SW1["Parallel Port Probing Across /24 Subnet"]
+        SW1 --> SW2["Catches Multicast-Silent Displays"]
+    end
+
+    subgraph P2["Phase 2: Hardware Fingerprinting"]
+        FP1["Airtame | Newline | SMART | Promethean | Barco | Apple TV | Cast"]
+    end
+
+    subgraph P3["Phase 3: L4 Port & Firewall Matrix"]
+        L4["Miracast RTSP 7236 | AirPlay 7000/7100 | Google Cast 8008/8009 | Newline 8000 | Crestron 41794"]
+    end
+
+    subgraph P4["Phase 4: Root Cause Synthesis & Helpdesk Escalation"]
+        ES1["Plain-English Executive Verdict"]
+        ES1 --> ES2["Generic Architectural Fix (WLAN ACL / IGMP Querier / mDNS Gateway)"]
+        ES2 --> ES3["Formatted Jira/ServiceNow Escalation Snippet"]
+    end
+
+    P0 --> P1 --> P15 --> P2 --> P3 --> P4
 ```
 
 ---
 
 ## The Problem Solved
 
-In enterprise deployments, devices like **Airtame** or **Apple TV** often work on internal staff networks but fail when exposed to guest or BYOD VLANs:
+In enterprise deployments, devices like **Airtame** or **Newline Interactive boards** frequently work on internal staff networks but fail when clients connect to guest or BYOD VLANs:
 - Guests see an on-screen message instructing them to **"Download / Open the Airtame App"** rather than showing the standard PIN code prompt.
-- `Win + K` either doesn't list the screen or fails during connection.
+- Windows `Win + K` either does not list the screen or fails during connection.
 - Ping (ICMP) succeeds, but casting fails silently.
 
-**Why this happens:**
-Windows 10/11 uses **Miracast over Infrastructure (MS-MICE)**. It requires:
-1. **mDNS discovery** for `_display._tcp.local` (UDP `5353`).
-2. **RTSP control setup** over **TCP `7236`** to negotiate the PIN prompt.
-3. **RTP streaming** over UDP `7250–7254`.
-
-If mDNS filtering drops the discovery string or the guest WLAN firewall blocks TCP `7236`, the connection fails and Airtame falls back to prompting for the desktop app.
+**Underlying Technical Causes:**
+1. **Miracast over Infrastructure (MS-MICE)** requires **mDNS discovery** for `_display._tcp.local` (UDP `5353`) and an **RTSP control setup** over **TCP `7236`** to negotiate the on-screen PIN. If either is filtered or dropped by Wi-Fi client isolation or switch ACLs, Windows cannot connect natively.
+2. **IGMP Snooping Pruning**: Switches drop multicast streams after 3–5 minutes if an active **IGMP Querier** is missing.
+3. **Multicast-Silent Devices**: Certain displays do not broadcast link-local multicast, requiring active subnet sweeps to locate.
 
 ---
 
 ## Features
 
-- **Cross-Platform mDNS Scanner** (`cast_diag.py`):
-  - Sends raw multicast DNS PTR queries for `_display._tcp`, `_airtame._tcp`, `_airplay._tcp`, `_raop._tcp`, and `_googlecast._tcp`.
-  - Verifies whether Mist APs and Junos switches are forwarding or pruning multicast advertisements.
-- **L4 Port & Protocol Verifier**:
-  - Tests TCP ports `7236` (Miracast RTSP), `80/443` (Airtame API), `7000/7100` (AirPlay), and `8008/8009` (Google Cast).
-  - Pinpoints whether firewall filters or access lists are blocking the session setup.
-- **Native Windows PowerShell Probe** (`Test-CastNetwork.ps1`):
-  - Built specifically for Windows 10/11 clients.
-  - Checks NDIS Wi-Fi driver wireless display support, ICMP reachability, and L4 port matrix.
+- **Guided Helpdesk Workflow (Default)**:
+  - Step-by-step interactive prompts built for Tier-1 technicians and junior field engineers.
+  - Automatically handles 0-device discovery (prompts for the IP on the physical TV screen), single-device auto-targeting, and multi-device menus.
+- **A/B Side-by-Side Comparison Engine (`--compare <WORKING_IP> <FAILING_IP>`)**:
+  - Compares a functioning conference room display against a broken room display and highlights the exact port/multicast differences.
+- **Automated Ticket Escalation Generator**:
+  - Outputs a pre-formatted, copy-paste summary block with executive verdict and NetOps action items ready for Jira or ServiceNow tickets.
+- **Active Subnet Sweep (`--sweep [SUBNET]`)**:
+  - Fast 50-worker thread pool that audits a `/24` subnet in under 2 seconds to discover multicast-silent displays.
+- **Phase 0 Pre-Flight Check**:
+  - Audits Python/PowerShell runtime, default route, socket permissions, and Bluetooth LE radio availability before testing.
+- **Native Windows PowerShell Probe (`Test-CastNetwork.ps1`)**:
+  - Checks NDIS wireless display driver support (`netsh wlan show drivers`), ICMP, and L4 casting port matrix directly from Windows 10/11 laptops.
 
 ---
 
 ## Usage
 
-### 1. Python Diagnostic Suite (Linux, macOS, Windows)
+### 1. Interactive Guided Helpdesk Mode (Default)
 
-No external pip dependencies required (standard library only):
+Simply run the script with no arguments. It checks prerequisites, scans the network, and walks you through testing:
 
 ```bash
-# Scan local subnet for active casting mDNS advertisements
 python3 cast_diag.py
-
-# Run full discovery + targeted port audit against a specific display IP
-python3 cast_diag.py -t 192.168.10.50
 ```
 
-### 2. Windows Client PowerShell Probe
+### 2. Automated Zero-Config Batch Mode (`--zero-config`)
 
-Run directly from a Windows laptop connected to the target SSID:
+Non-interactive batch mode designed for senior engineers, scheduled tasks, or automated scripts:
+
+```bash
+# Auto-audits all discovered screens on the local subnet
+python3 cast_diag.py --zero-config
+
+# Auto-audit all screens with an active subnet sweep on a specific work VLAN
+python3 cast_diag.py --sweep 10.98.2.0/24 --zero-config
+```
+
+### 3. A/B Comparison Mode (Working Room vs. Broken Room)
+
+Compares two screens side-by-side to pinpoint why one room works and the other fails:
+
+```bash
+python3 cast_diag.py --compare 192.168.1.50 192.168.1.55
+```
+
+### 4. Direct Target IP & File Export
+
+```bash
+# Target a specific screen directly and export report to a timestamped file
+python3 cast_diag.py -t 10.98.2.50 --export
+```
+
+### 5. Native Windows PowerShell Probe
+
+Run directly from a Windows 10/11 laptop connected to the target Wi-Fi SSID:
 
 ```powershell
-.\Test-CastNetwork.ps1 -TargetIp 192.168.10.50
+.\Test-CastNetwork.ps1 -TargetIp 10.98.2.50
 ```
 
 ---
 
 ## Port and Protocol Matrix
 
-| Protocol | Direction | Ports | Purpose |
+| Protocol Family | Direction | Transport / Port | Service / Purpose |
 | :--- | :--- | :--- | :--- |
-| **mDNS (Multicast DNS)** | Multicast (224.0.0.251) | UDP `5353` | Service discovery (`_display._tcp`, `_airplay._tcp`, etc.) |
-| **Miracast RTSP** | Client $\rightarrow$ Display | TCP `7236` | PIN handshake and stream session setup |
-| **Miracast RTP Data** | Client $\rightarrow$ Display | UDP `7250–7254` | Audio and video payload delivery |
-| **Airtame Local API** | Client $\rightarrow$ Display | TCP `80`, `443` | Web UI and pairing fallback |
-| **Apple AirPlay** | Client $\rightarrow$ Display | TCP `7000`, `7100` | Screen mirroring initiation and control |
-| **Google Cast** | Client $\rightarrow$ Display | TCP `8008`, `8009` | DIAL control and TLS Cast channel |
+| **mDNS (ZeroConf)** | Multicast (224.0.0.251) | UDP `5353` | Service discovery (`_display._tcp`, `_airplay._tcp`, `_googlecast._tcp`) |
+| **SSDP / UPnP / DIAL** | Multicast (239.255.255.250) | UDP `1900` | DLNA MediaRenderer, Smart TVs, DIAL (1st-gen Cast) |
+| **Miracast (MS-MICE)** | Client $\rightarrow$ Display | TCP `7236` | RTSP control session setup & on-screen PIN negotiation |
+| **Miracast Media** | Client $\rightarrow$ Display | UDP `7250–7254` | RTP audio/video streaming payload |
+| **Apple AirPlay** | Client $\rightarrow$ Display | TCP `7000`, `7100` | AirPlay screen mirroring & stream control |
+| **Apple A/V Clock** | Client $\rightarrow$ Display | UDP `319` | Precision Time Protocol (PTP clock sync) |
+| **Google Cast** | Client $\rightarrow$ Display | TCP `8008`, `8009` | DIAL HTTP and TLS Cast Channel |
+| **Airtame API** | Client $\rightarrow$ Display | TCP `80`, `443`, `8001` | Device web management and desktop streaming |
+| **Classroom IFPs** | Client $\rightarrow$ Display | TCP `8000`, `8443` | Newline Cast / Clevershare / SMART Board administration |
+| **Enterprise AV** | Client $\rightarrow$ Display | TCP `8080`, `41794` | Barco ClickShare streaming & Crestron CIP AirMedia control |
+
+---
+
+## Architecture & Diagnostic Phases
+
+| Phase | Name | Scope & Technical Objective |
+| :---: | :--- | :--- |
+| **0** | **Pre-Flight System Check** | Audits Python runtime, active IP interface, multicast socket binding, and BLE radio. |
+| **1** | **L2 Multicast Audit** | Probes mDNS (`224.0.0.251:5353`) and multi-target SSDP (`239.255.255.250:1900`). |
+| **1.5**| **Active Subnet Sweep** | 50-worker thread pool auditing `/24` subnet for multicast-silent casting displays. |
+| **2** | **Hardware Fingerprinting** | Identifies Airtame, Newline, SMART, Promethean, Barco, Apple TV, or Chromecast. |
+| **3** | **L4 Port Matrix Audit** | Probes RTSP `7236`, AirPlay `7000/7100`, Cast `8008/8009`, and management ports. |
+| **4** | **Synthesis & Escalation** | Outputs architectural root cause, protocol resolutions, and pre-formatted Jira/ServiceNow ticket block. |
 
 ---
 
