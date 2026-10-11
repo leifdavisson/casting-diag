@@ -91,6 +91,17 @@ CAST_SERVICES = {
         "category": "Classroom IFP",
         "desc": "ViewSonic ViewBoard vCast screen sharing",
     },
+    # Consumer & Smart TV Casting
+    "_amzn-wplay._tcp.local": {
+        "name": "Amazon Fire TV (Fling / WPlay)",
+        "category": "Smart TV / Media Hub",
+        "desc": "Amazon Fire TV casting & screen mirroring",
+    },
+    "_samsung._tcp.local": {
+        "name": "Samsung Smart View / Tizen",
+        "category": "Smart TV / Media Hub",
+        "desc": "Samsung TV screen mirroring discovery",
+    },
 }
 
 PORT_MATRIX = {
@@ -201,18 +212,27 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
         except Exception:
             pass
 
-    # Send SSDP query
-    ssdp_req = (
-        "M-SEARCH * HTTP/1.1\r\n"
-        f"HOST: {SSDP_GROUP}:{SSDP_PORT}\r\n"
-        'MAN: "ssdp:discover"\r\n'
-        "MX: 2\r\n"
-        "ST: ssdp:all\r\n\r\n"
-    ).encode("utf-8")
-    try:
-        sock_ssdp.sendto(ssdp_req, (SSDP_GROUP, SSDP_PORT))
-    except Exception:
-        pass
+    # Send SSDP queries across standard search targets (DIAL, UPnP MediaRenderer, Samsung, Fire TV)
+    ssdp_search_targets = [
+        "urn:dial-multiscreen-org:service:dial:1",
+        "urn:schemas-upnp-org:device:MediaRenderer:1",
+        "urn:schemas-upnp-org:device:tvdevice:1",
+        "urn:samsung.com:device:RemoteControlReceiver:1",
+        "upnp:rootdevice",
+        "ssdp:all",
+    ]
+    for st_target in ssdp_search_targets:
+        ssdp_req = (
+            "M-SEARCH * HTTP/1.1\r\n"
+            f"HOST: {SSDP_GROUP}:{SSDP_PORT}\r\n"
+            'MAN: "ssdp:discover"\r\n'
+            "MX: 2\r\n"
+            f"ST: {st_target}\r\n\r\n"
+        ).encode("utf-8")
+        try:
+            sock_ssdp.sendto(ssdp_req, (SSDP_GROUP, SSDP_PORT))
+        except Exception:
+            pass
 
     discovered_mdns = {k: [] for k in CAST_SERVICES}
     discovered_ssdp = []
@@ -258,6 +278,7 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
                         seen_ssdp_ips.add(ip)
                         text = data.decode("utf-8", errors="replace")
                         srv, st, loc = "", "", ""
+                        friendly_name = ""
                         for line in text.splitlines():
                             low = line.lower()
                             if low.startswith("server:"):
@@ -266,7 +287,28 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
                                 st = line.split(":", 1)[1].strip()
                             elif low.startswith("location:"):
                                 loc = line.split(":", 1)[1].strip()
-                        discovered_ssdp.append({"ip": ip, "server": srv or "Generic UPnP", "st": st or "Unknown", "location": loc, "raw": text})
+
+                        # Attempt fast parse of XML location for friendlyName
+                        if loc and loc.startswith("http"):
+                            try:
+                                import urllib.request, xml.etree.ElementTree as ET
+                                with urllib.request.urlopen(loc, timeout=1.0) as resp:
+                                    root_xml = ET.fromstring(resp.read(4096))
+                                    for elem in root_xml.iter():
+                                        if "friendlyName" in elem.tag and elem.text:
+                                            friendly_name = elem.text.strip()
+                                            break
+                            except Exception:
+                                pass
+
+                        discovered_ssdp.append({
+                            "ip": ip,
+                            "server": srv or "Generic UPnP",
+                            "st": st or "Unknown",
+                            "location": loc,
+                            "friendly_name": friendly_name,
+                            "raw": text
+                        })
                 except Exception:
                     pass
 
@@ -290,7 +332,8 @@ def run_phase1_discovery(timeout: float = 3.0, monitor_interval: int = 0) -> Tup
     print("\n--- SSDP / UPnP Discovery Results (UDP 1900) ---")
     if discovered_ssdp:
         for d in discovered_ssdp:
-            print(f"  [+] UPnP/SSDP Device at {d['ip']}: {d['server']} (ST: {d['st']})")
+            display_str = f"'{d['friendly_name']}'" if d.get('friendly_name') else d['server']
+            print(f"  [+] Device at {d['ip']}: {display_str} (ST: {d['st']})")
     else:
         print("  [-] No SSDP / UPnP responses received.")
 
