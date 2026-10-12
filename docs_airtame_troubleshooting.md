@@ -126,11 +126,25 @@ set protocols igmp interface <guest-irb-or-vlan-interface>
 
 ---
 
-## 5. References & Official Documentation
+## 5. References & Multi-Vendor Official Documentation
 
-* [Airtame: Network Integration & Requirements Guide](https://support.airtame.com/en/articles/5387431-airtame-network-integration-guide)
-* [Airtame: How to Cast with Miracast & Miracast over Infrastructure](https://support.airtame.com/en/articles/5387340-how-to-present-with-miracast)
-* [Microsoft Docs: [MS-MICE] Miracast over Infrastructure Connection Establishment Protocol](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/9ab7f74b-aa2d-45a8-9d18-912803b0c266)
-* [Juniper Mist: Configuring mDNS and Bonjour Gateway](https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/concept/mdns-bonjour-gateway.html)
-* [Juniper Mist: WLAN Multicast and Broadcast Settings](https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/concept/wlan-settings.html)
-* [Juniper Junos: Configuring IGMP Snooping on EX Series Switches](https://www.juniper.net/documentation/us/en/software/junos/multicast/topics/topic-map/igmp-snooping.html)
+### Wireless Presentation & Display Hardware
+* [Airtame Official Platform & Hardware](https://airtame.com)
+* [Newline Interactive Displays](https://newline-interactive.com/usa/)
+* [SMART Technologies: Configuring Network for SMART Mirror](https://support.smarttech.com/docs/software/smart-mirror/en/configuring/default.cshtml)
+* [Promethean Support: Screen Share Network Considerations & Ports](https://support.prometheanworld.com/s/article/2792?language=en_US)
+* [Barco Official Support Portal](https://www.barco.com)
+* [Crestron AirMedia: Network Infrastructure & Security Guide](https://docs.crestron.com/en-us/7693/Content/Topics/AirMedia-Network-Infrastructure.htm)
+* [Crestron AirMedia Wireless Presentation Solutions](https://www.crestron.com/Products/Featured-Solutions/AirMedia)
+
+### Protocol Specifications & OS Vendors
+* [Microsoft Open Specifications: [MS-MICE] Miracast over Infrastructure Establishment](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mice/)
+* [Microsoft Surface Hub: Miracast over Infrastructure Network Requirements](https://learn.microsoft.com/en-us/surface-hub/miracast-over-infrastructure)
+* [Apple Support: AirPlay Payload Settings for Enterprise MDM](https://support.apple.com/guide/deployment/airplay-payload-settings-dep83777d130/web)
+* [Google Cast: Google Cast SDK & Architecture Overview](https://developers.google.com/cast/docs/overview)
+
+### Enterprise Networking & Multicast Gateways
+* [Juniper Mist: Configuring Mist Bonjour Gateway & mDNS Rules](https://www.juniper.net/documentation/us/en/software/mist/mist-wireless/topics/concept/mist-bonjour-gateway.html)
+* [Junos OS: Configuring IGMP Snooping on EX Series Switches](https://www.juniper.net/documentation/us/en/software/junos/multicast/topics/example/igmp-snooping-ex-series-configuring.html)
+* [Cisco Meraki: Wireless Bonjour Forwarding Configuration](https://documentation.meraki.com/Wireless/Design_and_Configure/Configuration_Guides/Client_Addressing_and_Bridging/Bonjour_Forwarding)
+* [Cisco Meraki: MX Security Appliance Bonjour Forwarding](https://documentation.meraki.com/SASE_and_SD-WAN/MX/Operate_and_Maintain/How-Tos/Configuring_Bonjour_forwarding_for_the_MX_Security_Appliance)
